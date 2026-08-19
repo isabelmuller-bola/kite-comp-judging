@@ -1065,18 +1065,41 @@ function HeatEntriesPanel({ state, heat, compId }) {
 }
 
 function AdminGate({ state, update, onBack, compId }) {
-  const [unlocked, setUnlocked] = useState(false);
+  const adminKey = `kite-comp:admin-pw:${compId}`;
+  const [unlocked, setUnlocked] = useState(() => {
+    try {
+      const saved = localStorage.getItem(adminKey);
+      const expected = state.adminPassword || "Soulgames";
+      return !!saved && saved === expected;
+    } catch {
+      return false;
+    }
+  });
   const [pwInput, setPwInput] = useState("");
   const [error, setError] = useState("");
+  const [remember, setRemember] = useState(true);
 
   const tryUnlock = () => {
     const expected = state.adminPassword || "Soulgames";
     if (pwInput === expected) {
       setUnlocked(true);
       setError("");
+      if (remember) {
+        try {
+          localStorage.setItem(adminKey, pwInput);
+        } catch {}
+      }
     } else {
       setError("Wrong password.");
     }
+  };
+
+  const forgetDevice = () => {
+    try {
+      localStorage.removeItem(adminKey);
+    } catch {}
+    setUnlocked(false);
+    setPwInput("");
   };
 
   if (!unlocked) {
@@ -1085,7 +1108,7 @@ function AdminGate({ state, update, onBack, compId }) {
         <Header title="Admin" onBack={onBack} />
         <Card>
           <SectionLabel>Password required</SectionLabel>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
             <input
               type="password"
               value={pwInput}
@@ -1096,13 +1119,17 @@ function AdminGate({ state, update, onBack, compId }) {
             />
             <button style={btn(true)} onClick={tryUnlock}>Unlock</button>
           </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text-secondary, #5F5E5A)" }}>
+            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+            Remember on this device
+          </label>
           {error && <p style={{ color: "var(--text-danger, #A32D2D)", fontSize: 13, marginTop: 8, marginBottom: 0 }}>{error}</p>}
         </Card>
       </div>
     );
   }
 
-  return <AdminView state={state} update={update} onBack={onBack} compId={compId} />;
+  return <AdminView state={state} update={update} onBack={onBack} compId={compId} onForgetDevice={forgetDevice} />;
 }
 
 function ShareLinkCard({ compId }) {
@@ -1137,7 +1164,7 @@ function ShareLinkCard({ compId }) {
   );
 }
 
-function AdminView({ state, update, onBack, compId }) {
+function AdminView({ state, update, onBack, compId, onForgetDevice }) {
   const [tab, setTab] = useState(state.planningDone ? "riders" : "plan");
   const [newRider, setNewRider] = useState("");
   const [newRank, setNewRank] = useState("");
@@ -1716,6 +1743,9 @@ function AdminView({ state, update, onBack, compId }) {
               <button style={btn(false)} onClick={changePassword}>Set</button>
             </div>
             {passwordSaved && <p style={{ fontSize: 13, color: "var(--text-success, #3B6D11)", marginTop: 8, marginBottom: 0 }}>Password updated.</p>}
+            <button onClick={onForgetDevice} style={{ ...btn(false), fontSize: 12, marginTop: 12 }}>
+              Forget saved password on this device
+            </button>
           </Card>
           <Card style={{ marginBottom: 16 }}>
             <SectionLabel>Export</SectionLabel>
@@ -2425,12 +2455,19 @@ function JudgeScoring({ state, judge, onBack, compId, onSwitchJudge }) {
   );
 }
 
-function LeaderboardView({ state, onBack, compId }) {
+function LeaderboardView({ state, onBack, compId, focusHeatId }) {
   const heatsWithActivity = state.heats.filter((h) => h.status !== "pending");
-  const [heatId, setHeatId] = useState(heatsWithActivity[0]?.id || "");
+  const [heatId, setHeatId] = useState(focusHeatId || heatsWithActivity[0]?.id || "");
+  const [expanded, setExpanded] = useState(null);
+
+  useEffect(() => {
+    if (focusHeatId && heatsWithActivity.find((h) => h.id === focusHeatId)) setHeatId(focusHeatId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusHeatId]);
   useEffect(() => {
     if (!heatsWithActivity.find((h) => h.id === heatId) && heatsWithActivity[0]) setHeatId(heatsWithActivity[0].id);
   }, [heatsWithActivity, heatId]);
+
   const [data] = useHeatData(compId, heatId);
   const heat = state.heats.find((h) => h.id === heatId);
   const riderIds = heat ? heatRiderIds(state, heat) : [];
@@ -2446,48 +2483,104 @@ function LeaderboardView({ state, onBack, compId }) {
 
   const rows = riderIds.map((rid) => ({ rid, ...riderTotal(data, rid) })).sort((a, b) => b.total - a.total);
 
+  const topIdsFor = (rid) => {
+    const entries = (data.log || []).filter((e) => e.riderId === rid);
+    const scored = entries.map((e) => ({ id: e.id, score: trickScore(e) })).filter((e) => e.score !== null);
+    scored.sort((a, b) => b.score - a.score);
+    return new Set(scored.slice(0, 3).map((e) => e.id));
+  };
+
   return (
     <div>
       <Header title="Leaderboard" onBack={onBack} />
       <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
         {heatsWithActivity.map((h) => (
-          <button key={h.id} onClick={() => setHeatId(h.id)} style={btn(heatId === h.id)}>
+          <button key={h.id} onClick={() => { setHeatId(h.id); setExpanded(null); }} style={btn(heatId === h.id)}>
             Heat {heatNumber(state, h.id)} {h.status === "active" && <span style={{ fontSize: 11 }}> · live</span>}
           </button>
         ))}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {rows.map((r, i) => (
-          <div
-            key={r.rid}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "12px 16px",
-              border: "0.5px solid var(--border, #D9D7CE)",
-              borderRadius: 10,
-              background: i === 0 && r.hasAnyScore ? "var(--bg-accent-muted, #EAF1FB)" : "var(--surface-2, #FFFFFF)",
-            }}
-          >
-            <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ color: "var(--text-muted, #888780)", width: 20, fontWeight: 500 }}>{i + 1}</span>
-              <span style={{ fontWeight: 500 }}>{riderName(state, r.rid)}</span>
-            </span>
-            <span style={{ fontSize: 14, color: "var(--text-secondary, #5F5E5A)" }}>
-              {r.hasAnyScore ? (
-                <>
-                  <strong style={{ color: "var(--text-primary, #2C2C2A)" }}>{round1(r.total)}</strong>
-                  {" · best3 "}
-                  {round1(r.sumTop3)}
-                  {r.variety !== null ? ` · variety ${round1(r.variety)}` : " · variety pending"}
-                </>
-              ) : (
-                "No scores yet"
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {rows.map((r, i) => {
+          const topIds = topIdsFor(r.rid);
+          const entries = (data.log || [])
+            .filter((e) => e.riderId === r.rid)
+            .map((e) => ({ ...e, _score: trickScore(e) }))
+            .sort((a, b) => (b._score ?? -1) - (a._score ?? -1));
+          const color = heat && riderColorHex(state, heat, r.rid);
+          return (
+            <div
+              key={r.rid}
+              style={{
+                padding: "12px 16px",
+                border: "0.5px solid var(--border, #D9D7CE)",
+                borderRadius: 10,
+                background: i === 0 && r.hasAnyScore ? "var(--bg-accent-muted, #EAF1FB)" : "var(--surface-2, #FFFFFF)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: entries.length ? 8 : 0, flexWrap: "wrap", gap: 6 }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <span style={{ color: "var(--text-muted, #888780)", width: 20, fontWeight: 500 }}>{i + 1}</span>
+                  <RiderChip name={riderName(state, r.rid)} color={color} />
+                </span>
+                <span style={{ fontSize: 14, color: "var(--text-secondary, #5F5E5A)" }}>
+                  {r.hasAnyScore ? (
+                    <>
+                      <strong style={{ color: "var(--text-primary, #2C2C2A)" }}>{round1(r.total)}</strong>
+                      {" · best3 "}
+                      {round1(r.sumTop3)}
+                      {r.variety !== null ? ` · variety ${round1(r.variety)}` : " · variety pending"}
+                    </>
+                  ) : (
+                    "No scores yet"
+                  )}
+                </span>
+              </div>
+              {entries.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {entries.map((e) => {
+                    const counted = topIds.has(e.id);
+                    const crash = isCrash(e.trick);
+                    const isOpen = expanded === e.id;
+                    return (
+                      <div key={e.id}>
+                        <button
+                          onClick={() => setExpanded(isOpen ? null : e.id)}
+                          style={{
+                            fontSize: 13,
+                            fontWeight: counted ? 700 : 500,
+                            padding: "4px 10px",
+                            borderRadius: 999,
+                            border: `1px solid ${counted ? "var(--border-accent, #378ADD)" : "var(--border, #D9D7CE)"}`,
+                            background: crash ? "var(--bg-danger, #FCEBEB)" : counted ? "var(--bg-accent, #E6F1FB)" : "var(--surface-1, #F1EFE8)",
+                            color: crash ? "var(--text-danger, #A32D2D)" : counted ? "var(--text-accent, #185FA5)" : "var(--text-secondary, #5F5E5A)",
+                            cursor: "pointer",
+                          }}
+                        >
+                          {crash ? "CRASH" : e._score === null ? "…" : round1(e._score)}
+                        </button>
+                        {isOpen && (
+                          <div style={{ marginTop: 4, marginBottom: 4, padding: "8px 10px", background: "var(--surface-1, #F1EFE8)", borderRadius: 8, fontSize: 12 }}>
+                            <p style={{ margin: "0 0 4px 0", fontWeight: 500 }}>{e.trick}</p>
+                            {Object.keys(e.scores || {}).length === 0 ? (
+                              <p style={{ margin: 0, color: "var(--text-muted, #888780)" }}>No judge scores yet.</p>
+                            ) : (
+                              Object.entries(e.scores).map(([judgeId, val]) => (
+                                <span key={judgeId} style={{ marginRight: 10, color: "var(--text-secondary, #5F5E5A)" }}>
+                                  {state.judges.find((j) => j.id === judgeId)?.name || "Judge"}: {val === "skip" ? "skip" : val}
+                                </span>
+                              ))
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               )}
-            </span>
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -2522,16 +2615,27 @@ function RiderChip({ name, color, size = 13 }) {
   );
 }
 
-function BracketHeatTable({ state, heat, compId }) {
+function BracketHeatTable({ state, heat, compId, onViewHeat }) {
   const [data] = useHeatData(compId, heat.id, 10000);
   const rids = heatRiderIds(state, heat);
   const rows = rids.map((rid) => ({ rid, color: riderColorHex(state, heat, rid), ...riderTotal(data, rid) }));
   const anyScored = rows.some((r) => r.hasAnyScore);
   const sorted = anyScored ? rows.slice().sort((a, b) => b.total - a.total) : rows;
   const tbdCount = heat.slots.length - rids.length;
+  const isLive = heat.status === "active" || heat.status === "awaiting-variety";
 
   return (
-    <div style={{ minWidth: 220, border: "0.5px solid var(--border, #D9D7CE)", borderRadius: 10, overflow: "hidden", flexShrink: 0 }}>
+    <div
+      onClick={isLive ? () => onViewHeat(heat.id) : undefined}
+      style={{
+        minWidth: 220,
+        border: `0.5px solid ${isLive ? "var(--border-accent, #378ADD)" : "var(--border, #D9D7CE)"}`,
+        borderRadius: 10,
+        overflow: "hidden",
+        flexShrink: 0,
+        cursor: isLive ? "pointer" : "default",
+      }}
+    >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "var(--surface-1, #F1EFE8)" }}>
         <span style={{ fontWeight: 600, fontSize: 13 }}>Heat {heatNumber(state, heat.id)}</span>
         <Pill tone={heat.status === "active" ? "accent" : heat.status === "complete" ? "success" : heat.status === "awaiting-variety" ? "danger" : "gray"}>{heat.status}</Pill>
@@ -2556,12 +2660,13 @@ function BracketHeatTable({ state, heat, compId }) {
         ))}
         {heat.slots.length === 0 && <div style={{ padding: "8px 12px", fontSize: 12, color: "var(--text-muted, #888780)" }}>No slots defined</div>}
         {tbdCount > 0 && <div style={{ padding: "7px 12px", fontSize: 12, color: "var(--text-muted, #888780)", borderTop: "0.5px solid var(--border, #D9D7CE)" }}>{tbdCount} TBD</div>}
+        {isLive && <div style={{ padding: "6px 12px", fontSize: 11, color: "var(--text-accent, #185FA5)", borderTop: "0.5px solid var(--border, #D9D7CE)", textAlign: "center" }}>Tap for live scores →</div>}
       </div>
     </div>
   );
 }
 
-function BracketView({ state, onBack, compId }) {
+function BracketView({ state, onBack, compId, onViewHeat }) {
   return (
     <div>
       <Header title="Bracket" onBack={onBack} />
@@ -2575,7 +2680,7 @@ function BracketView({ state, onBack, compId }) {
               </div>
               <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 6 }}>
                 {heats.map((h) => (
-                  <BracketHeatTable key={h.id} state={state} heat={h} compId={compId} />
+                  <BracketHeatTable key={h.id} state={state} heat={h} compId={compId} onViewHeat={onViewHeat} />
                 ))}
                 {heats.length === 0 && <p style={{ fontSize: 13, color: "var(--text-muted, #888780)" }}>No heats in this round.</p>}
               </div>
@@ -2750,6 +2855,7 @@ export default function KiteCompApp() {
     }
   });
   const [role, setRole] = useState(null);
+  const [focusHeatId, setFocusHeatId] = useState(null);
   const [state, update, ready] = useSharedState(compId);
   const [storageOk, setStorageOk] = useState(true);
 
@@ -2796,7 +2902,11 @@ export default function KiteCompApp() {
     return <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted, #888780)" }}>Loading…</div>;
   }
 
-  const backToRoles = () => setRole(null);
+  const backToRoles = () => { setRole(null); setFocusHeatId(null); };
+  const viewLiveHeat = (heatId) => {
+    setFocusHeatId(heatId);
+    setRole("leaderboard");
+  };
 
   return (
     <div style={{ maxWidth: 520, margin: "0 auto", padding: "1rem 0" }}>
@@ -2812,8 +2922,8 @@ export default function KiteCompApp() {
       {role === "admin" && <AdminGate state={state} update={update} onBack={backToRoles} compId={compId} />}
       {role === "spotter" && <SpotterView state={state} update={update} onBack={backToRoles} compId={compId} />}
       {role === "judge" && <JudgeView state={state} update={update} onBack={backToRoles} compId={compId} />}
-      {role === "leaderboard" && <LeaderboardView state={state} onBack={backToRoles} compId={compId} />}
-      {role === "bracket" && <BracketView state={state} onBack={backToRoles} compId={compId} />}
+      {role === "leaderboard" && <LeaderboardView state={state} onBack={backToRoles} compId={compId} focusHeatId={focusHeatId} />}
+      {role === "bracket" && <BracketView state={state} onBack={backToRoles} compId={compId} onViewHeat={viewLiveHeat} />}
     </div>
   );
 }
