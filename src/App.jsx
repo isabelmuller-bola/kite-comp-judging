@@ -140,16 +140,18 @@ function riderTotal(heatData, riderId) {
   const hasAnyScore = scores.length > 0 || variety !== null;
   return { sumTop3, variety, total: sumTop3 + (variety || 0), trickCount: entries.length, hasAnyScore };
 }
-function suggestVarietyScore(heatData, riderId) {
-  const entries = (heatData.log || []).filter((e) => e.riderId === riderId && e.trick);
-  const uniqueCombos = new Set(entries.map((e) => e.trick.trim().toLowerCase()));
-  const words = entries.flatMap((e) => e.trick.toLowerCase().split(/\s+/));
-  const hasLeft = words.includes("left");
-  const hasRight = words.includes("right");
-  const balance = hasLeft && hasRight ? 1.5 : hasLeft || hasRight ? 0.5 : 0;
-  const varietyPart = Math.min(uniqueCombos.size, 5) * 1.6;
-  const raw = varietyPart + balance;
-  return Math.min(9.5, Math.round(raw * 2) / 2);
+function riderTrickBreakdown(heatData, riderId) {
+  const entries = (heatData.log || []).filter((e) => e.riderId === riderId && e.trick && !isCrash(e.trick));
+  const left = [];
+  const right = [];
+  const neutral = [];
+  entries.forEach((e) => {
+    const lower = e.trick.toLowerCase();
+    if (lower.includes("left")) left.push(e.trick);
+    else if (lower.includes("right")) right.push(e.trick);
+    else neutral.push(e.trick);
+  });
+  return { left, right, neutral };
 }
 function round1(n) {
   return Math.round(n * 10) / 10;
@@ -858,6 +860,23 @@ function PlanningTab({ state, update }) {
   );
 }
 
+function VarietyStatus({ state, heat, compId }) {
+  const [data] = useHeatData(compId, heat.id);
+  const riderIds = heatRiderIds(state, heat);
+  const approvedJudges = state.judges.filter((j) => j.status === "approved");
+  if (approvedJudges.length === 0) {
+    return <p style={{ fontSize: 12, color: "var(--text-muted, #888780)", margin: "6px 0 0 0" }}>No approved judges yet.</p>;
+  }
+  const submittedJudgeIds = approvedJudges.filter((j) => riderIds.every((rid) => (data.variety || {})[rid]?.[j.id] !== undefined));
+  const missing = approvedJudges.filter((j) => !submittedJudgeIds.includes(j));
+  return (
+    <p style={{ fontSize: 12, color: missing.length ? "var(--text-danger, #A32D2D)" : "var(--text-success, #3B6D11)", margin: "6px 0 0 0" }}>
+      Variety: {submittedJudgeIds.length} of {approvedJudges.length} judges submitted
+      {missing.length > 0 ? ` — waiting on ${missing.map((j) => j.name).join(", ")}` : " — all in"}
+    </p>
+  );
+}
+
 function HeatEntriesPanel({ state, heat, compId }) {
   const [data, updateHeat] = useHeatData(compId, heat.id, 6000);
   const [editingCell, setEditingCell] = useState(null);
@@ -1080,6 +1099,38 @@ function AdminGate({ state, update, onBack, compId }) {
   return <AdminView state={state} update={update} onBack={onBack} compId={compId} />;
 }
 
+function ShareLinkCard({ compId }) {
+  const [copied, setCopied] = useState(false);
+  let link = "";
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set("comp", compId);
+    link = url.toString();
+  } catch {}
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {}
+  };
+
+  return (
+    <Card style={{ marginBottom: 16 }}>
+      <SectionLabel>Share this competition</SectionLabel>
+      <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0 }}>
+        Send judges, spotters, and spectators this link — it opens straight into this competition without needing
+        the admin password.
+      </p>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input readOnly value={link} onClick={(e) => e.target.select()} style={{ flex: 1, fontSize: 12 }} />
+        <button style={btn(copied)} onClick={copy}>{copied ? "Copied" : "Copy"}</button>
+      </div>
+    </Card>
+  );
+}
+
 function AdminView({ state, update, onBack, compId }) {
   const [tab, setTab] = useState(state.planningDone ? "riders" : "plan");
   const [newRider, setNewRider] = useState("");
@@ -1149,8 +1200,9 @@ function AdminView({ state, update, onBack, compId }) {
       ),
     }));
 
-  const approveJudge = (id) => update((s) => ({ ...s, judges: s.judges.map((j) => (j.id === id ? { ...j, status: "approved" } : j)) }));
   const removeJudge = (id) => update((s) => ({ ...s, judges: s.judges.filter((j) => j.id !== id) }));
+  const generateJudgePin = (id) => update((s) => ({ ...s, judges: s.judges.map((j) => (j.id === id ? { ...j, pendingPin: genPin() } : j)) }));
+  const clearJudgePin = (id) => update((s) => ({ ...s, judges: s.judges.map((j) => (j.id === id ? { ...j, pendingPin: null } : j)) }));
 
   const addTrick = () => {
     if (!newTrick.trim()) return;
@@ -1270,6 +1322,7 @@ function AdminView({ state, update, onBack, compId }) {
   return (
     <div>
       <Header title="Admin" onBack={onBack} />
+      <ShareLinkCard compId={compId} />
       <div style={{ display: "flex", gap: 8, marginBottom: "1.25rem", flexWrap: "wrap" }}>
         {tabs.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} style={btn(tab === t.id)}>
@@ -1463,6 +1516,7 @@ function AdminView({ state, update, onBack, compId }) {
                   </button>
                 </div>
                 {!ready && h.status === "pending" && <p style={{ fontSize: 12, color: "var(--text-muted, #888780)", marginTop: 8, marginBottom: 0 }}>Waiting on riders to be resolved.</p>}
+                {h.status === "awaiting-variety" && <VarietyStatus state={state} heat={h} compId={compId} />}
                 {expandedHeats[h.id] && <HeatEntriesPanel state={state} heat={h} compId={compId} />}
               </Card>
             );
@@ -1539,23 +1593,34 @@ function AdminView({ state, update, onBack, compId }) {
       )}
 
       {tab === "judges" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {state.judges.length === 0 && <p style={{ color: "var(--text-muted, #888780)" }}>No judges have logged in yet.</p>}
-          {state.judges.map((j) => (
-            <div key={j.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", border: "0.5px solid var(--border, #D9D7CE)", borderRadius: 8 }}>
-              <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                {j.name} <Pill tone={j.status === "approved" ? "success" : "gray"}>{j.status}</Pill>
-              </span>
-              <div style={{ display: "flex", gap: 6 }}>
-                {j.status !== "approved" && (
-                  <button style={btn(false)} onClick={() => approveJudge(j.id)}>
-                    Approve
+        <div>
+          <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0, marginBottom: 14 }}>
+            When a judge picks their name on their phone, generate a code here and read it out to them in person —
+            that's what lets them in. Their phone then stays logged in on its own even if the browser closes by
+            accident, so you only need to do this once per judge per device.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {state.judges.length === 0 && <p style={{ color: "var(--text-muted, #888780)" }}>No judges have registered yet.</p>}
+            {state.judges.map((j) => (
+              <div key={j.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", border: "0.5px solid var(--border, #D9D7CE)", borderRadius: 8, flexWrap: "wrap", gap: 8 }}>
+                <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  {j.name} <Pill tone={j.status === "approved" ? "success" : "gray"}>{j.status}</Pill>
+                  {j.pendingPin && (
+                    <span style={{ fontSize: 20, fontWeight: 700, letterSpacing: "0.08em", color: "var(--text-accent, #185FA5)" }}>{j.pendingPin}</span>
+                  )}
+                </span>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button style={btn(false)} onClick={() => generateJudgePin(j.id)}>
+                    {j.pendingPin ? "New code" : "Generate code"}
                   </button>
-                )}
-                <IconBtn icon="Delete" onClick={() => removeJudge(j.id)} label="Remove judge" />
+                  {j.pendingPin && (
+                    <button style={btn(false)} onClick={() => clearJudgePin(j.id)}>Hide</button>
+                  )}
+                  <IconBtn icon="Delete" onClick={() => removeJudge(j.id)} label="Remove judge" />
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
 
@@ -1816,86 +1881,136 @@ function SpotterView({ state, onBack, compId }) {
   );
 }
 
+function genPin() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
 function JudgeView({ state, update, onBack, compId }) {
   const [profile, setProfile] = useState(null);
   const [profileLoaded, setProfileLoaded] = useState(false);
-  const [nameInput, setNameInput] = useState("");
+  const [pickedJudgeId, setPickedJudgeId] = useState(null);
+  const [pinInput, setPinInput] = useState("");
+  const [pinError, setPinError] = useState("");
+  const [newName, setNewName] = useState("");
   const judgeKey = `kite-comp:my-judge:${compId}`;
 
   useEffect(() => {
-    let stop = false;
-    (async () => {
-      try {
-        const res = await window.storage.get(judgeKey, false);
-        if (res && !stop) setProfile(JSON.parse(res.value));
-      } catch {}
-      if (!stop) setProfileLoaded(true);
-    })();
-    return () => {
-      stop = true;
-    };
+    try {
+      const raw = localStorage.getItem(judgeKey);
+      if (raw) setProfile(JSON.parse(raw));
+    } catch {}
+    setProfileLoaded(true);
   }, [judgeKey]);
 
-  const registerJudge = async () => {
-    if (!nameInput.trim()) return;
-    const j = { id: uid(), name: nameInput.trim(), status: "pending" };
-    setProfile(j);
+  const switchJudge = () => {
     try {
-      await window.storage.set(judgeKey, JSON.stringify(j), false);
-    } catch {}
-    update((s) => ({ ...s, judges: [...s.judges, j] }));
-  };
-
-  const switchJudge = async () => {
-    try {
-      await window.storage.delete(judgeKey, false);
+      localStorage.removeItem(judgeKey);
     } catch {}
     setProfile(null);
+    setPickedJudgeId(null);
+    setPinInput("");
+    setPinError("");
+  };
+
+  const registerNewJudge = () => {
+    if (!newName.trim()) return;
+    const j = { id: uid(), name: newName.trim(), status: "pending", pendingPin: null };
+    update((s) => ({ ...s, judges: [...s.judges, j] }));
+    setPickedJudgeId(j.id);
+    setNewName("");
+  };
+
+  const submitPin = () => {
+    const j = state.judges.find((x) => x.id === pickedJudgeId);
+    if (!j) return;
+    if (!j.pendingPin || pinInput.trim() !== j.pendingPin) {
+      setPinError("That code doesn't match. Ask the admin for the current one.");
+      return;
+    }
+    const authed = { id: j.id, name: j.name };
+    setProfile(authed);
+    try {
+      localStorage.setItem(judgeKey, JSON.stringify(authed));
+    } catch {}
+    update((s) => ({ ...s, judges: s.judges.map((x) => (x.id === j.id ? { ...x, status: "approved", pendingPin: null } : x)) }));
+    setPickedJudgeId(null);
+    setPinInput("");
+    setPinError("");
   };
 
   if (!profileLoaded) {
     return <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted, #888780)" }}>Loading…</div>;
   }
 
-  if (!profile) {
+  // Already authenticated on this device — skip straight in, even after an accidental
+  // browser close, as long as the judge still exists on the roster.
+  if (profile) {
+    const liveJudge = state.judges.find((j) => j.id === profile.id);
+    if (liveJudge && liveJudge.status === "approved") {
+      return <JudgeScoring state={state} judge={liveJudge} onBack={onBack} compId={compId} onSwitchJudge={switchJudge} />;
+    }
+    // Roster entry vanished or was reset — fall through to re-pick.
+  }
+
+  // Picked a name and waiting on the admin-issued code.
+  if (pickedJudgeId) {
+    const j = state.judges.find((x) => x.id === pickedJudgeId);
     return (
       <div>
         <Header title="Judge" onBack={onBack} />
         <Card>
-          <SectionLabel>Request access</SectionLabel>
+          <SectionLabel>Access code for {j ? j.name : "you"}</SectionLabel>
+          <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0 }}>
+            Ask the admin standing with you for the code — it's shown on their screen next to your name.
+          </p>
           <div style={{ display: "flex", gap: 8 }}>
-            <input value={nameInput} onChange={(e) => setNameInput(e.target.value)} onKeyDown={onEnter(registerJudge)} placeholder="Your name" style={{ flex: 1 }} />
-            <button style={btn(false)} onClick={registerJudge}>Request access</button>
+            <input
+              value={pinInput}
+              onChange={(e) => setPinInput(e.target.value)}
+              onKeyDown={onEnter(submitPin)}
+              placeholder="Access code"
+              inputMode="numeric"
+              style={{ flex: 1 }}
+            />
+            <button style={btn(true)} onClick={submitPin}>Unlock</button>
           </div>
-          <p style={{ fontSize: 12, color: "var(--text-muted, #888780)", marginTop: 10, marginBottom: 0 }}>
-            This saves to this device — refreshing keeps you logged in. Testing several judges yourself? Use a separate browser profile or incognito window per judge.
-          </p>
+          {pinError && <p style={{ color: "var(--text-danger, #A32D2D)", fontSize: 13, marginTop: 8, marginBottom: 0 }}>{pinError}</p>}
+          <button onClick={() => setPickedJudgeId(null)} style={{ ...btn(false), fontSize: 12, marginTop: 10 }}>← Not me, pick again</button>
         </Card>
       </div>
     );
   }
 
-  const liveJudge = state.judges.find((j) => j.id === profile.id);
-  const status = liveJudge?.status || profile.status;
-
-  if (status !== "approved") {
-    return (
-      <div>
-        <Header title="Judge" onBack={onBack} />
-        <Card>
-          <p style={{ margin: 0 }}>
-            Waiting for the admin to approve <strong>{profile.name}</strong>.
-          </p>
-          <button onClick={switchJudge} style={{ ...btn(false), fontSize: 12, marginTop: 10 }}>Not you? Switch judge</button>
-        </Card>
-      </div>
-    );
-  }
-
-  return <JudgeScoring state={state} judge={liveJudge} onBack={onBack} compId={compId} />;
+  // Nothing picked yet — show the roster to choose from, or register a new name.
+  return (
+    <div>
+      <Header title="Judge" onBack={onBack} />
+      <Card style={{ marginBottom: 16 }}>
+        <SectionLabel>Who are you?</SectionLabel>
+        {state.judges.length === 0 && <p style={{ fontSize: 13, color: "var(--text-muted, #888780)" }}>No judges registered yet — add your name below.</p>}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {state.judges.map((j) => (
+            <button key={j.id} onClick={() => setPickedJudgeId(j.id)} style={btn(false)}>
+              {j.name}
+            </button>
+          ))}
+        </div>
+      </Card>
+      <Card>
+        <SectionLabel>Not on the list</SectionLabel>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={onEnter(registerNewJudge)} placeholder="Your name" style={{ flex: 1 }} />
+          <button style={btn(false)} onClick={registerNewJudge}>Register</button>
+        </div>
+        <p style={{ fontSize: 12, color: "var(--text-muted, #888780)", marginTop: 10, marginBottom: 0 }}>
+          The admin will need to give you an access code either way — this just adds your name so they can generate one.
+        </p>
+      </Card>
+    </div>
+  );
 }
 
-function JudgeScoring({ state, judge, onBack, compId }) {
+function JudgeScoring({ state, judge, onBack, compId, onSwitchJudge }) {
   const relevantHeats = state.heats.filter((h) => h.status === "active" || h.status === "awaiting-variety");
   const [heatId, setHeatId] = useState(relevantHeats[0]?.id || "");
   useEffect(() => {
@@ -1905,12 +2020,15 @@ function JudgeScoring({ state, judge, onBack, compId }) {
   const heat = state.heats.find((h) => h.id === heatId);
   const riderIds = heat ? heatRiderIds(state, heat) : [];
   const [data, updateHeat] = useHeatData(compId, heatId);
+  const [lastScored, setLastScored] = useState(null);
+  const [viewMode, setViewMode] = useState("pending");
 
   if (relevantHeats.length === 0) {
     return (
       <div>
         <Header title={`Judge — ${judge.name}`} onBack={onBack} />
         <p style={{ color: "var(--text-muted, #888780)" }}>No heat is live right now.</p>
+        <button onClick={onSwitchJudge} style={{ ...btn(false), fontSize: 12, marginTop: 10 }}>Not you? Switch judge</button>
       </div>
     );
   }
@@ -1920,6 +2038,22 @@ function JudgeScoring({ state, judge, onBack, compId }) {
       ...d,
       log: (d.log || []).map((e) => (e.id === entryId ? { ...e, scores: { ...e.scores, [judge.id]: value } } : e)),
     }));
+  };
+  const clearOwnScore = (entryId) => {
+    updateHeat((d) => ({
+      ...d,
+      log: (d.log || []).map((e) => {
+        if (e.id !== entryId) return e;
+        const scores = { ...e.scores };
+        delete scores[judge.id];
+        return { ...e, scores };
+      }),
+    }));
+  };
+  const undoLast = () => {
+    if (!lastScored) return;
+    clearOwnScore(lastScored.id);
+    setLastScored(null);
   };
 
   const submitVariety = () => {
@@ -1941,10 +2075,13 @@ function JudgeScoring({ state, judge, onBack, compId }) {
 
   const alreadySubmittedVariety = riderIds.length > 0 && riderIds.every((rid) => (data.variety || {})[rid]?.[judge.id] !== undefined);
   const pendingEntries = (data.log || []).filter((e) => e.scores[judge.id] === undefined && !isCrash(e.trick)).slice().reverse();
+  const allEntries = (data.log || []).filter((e) => !isCrash(e.trick)).slice().reverse();
+  const visibleEntries = viewMode === "pending" ? pendingEntries : allEntries;
 
   return (
     <div>
       <Header title={`Judge — ${judge.name}`} onBack={onBack} />
+      <button onClick={onSwitchJudge} style={{ ...btn(false), fontSize: 12, marginBottom: 12 }}>Not you? Switch judge</button>
       {relevantHeats.length > 1 && (
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           {relevantHeats.map((h) => (
@@ -1963,22 +2100,31 @@ function JudgeScoring({ state, judge, onBack, compId }) {
           ) : (
             <>
               {riderIds.map((rid) => {
-                const suggestion = suggestVarietyScore(data, rid);
+                const { left, right, neutral } = riderTrickBreakdown(data, rid);
                 return (
-                  <div key={rid} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                    <span>
+                  <div key={rid} style={{ marginBottom: 14, paddingBottom: 12, borderBottom: "0.5px solid var(--border, #D9D7CE)" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                       <RiderChip name={riderName(state, rid)} color={heat && riderColorHex(state, heat, rid)} />
-                      <span style={{ fontSize: 12, color: "var(--text-muted, #888780)", marginLeft: 8 }}>suggested {suggestion}</span>
-                    </span>
-                    <input
-                      id={`variety-input-${rid}`}
-                      type="number"
-                      min="0"
-                      max="10"
-                      step="0.5"
-                      style={{ width: 80 }}
-                      defaultValue={suggestion}
-                    />
+                      <input
+                        id={`variety-input-${rid}`}
+                        type="number"
+                        min="0"
+                        max="10"
+                        step="0.5"
+                        style={{ width: 80 }}
+                      />
+                    </div>
+                    <p style={{ fontSize: 13, margin: "2px 0", color: "var(--text-secondary, #5F5E5A)" }}>
+                      <strong>Left:</strong> {left.length ? left.join(", ") : "—"}
+                    </p>
+                    <p style={{ fontSize: 13, margin: "2px 0", color: "var(--text-secondary, #5F5E5A)" }}>
+                      <strong>Right:</strong> {right.length ? right.join(", ") : "—"}
+                    </p>
+                    {neutral.length > 0 && (
+                      <p style={{ fontSize: 13, margin: "2px 0", color: "var(--text-muted, #888780)" }}>
+                        Other: {neutral.join(", ")}
+                      </p>
+                    )}
                   </div>
                 );
               })}
@@ -1988,42 +2134,77 @@ function JudgeScoring({ state, judge, onBack, compId }) {
         </Card>
       ) : (
         <div>
-          {pendingEntries.length === 0 && <p style={{ color: "var(--text-muted, #888780)" }}>No tricks waiting for your score.</p>}
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <button style={btn(viewMode === "pending")} onClick={() => setViewMode("pending")}>Pending</button>
+            <button style={btn(viewMode === "all")} onClick={() => setViewMode("all")}>All my scores</button>
+            {lastScored && (
+              <button style={{ ...btn(false), marginLeft: "auto" }} onClick={undoLast}>
+                Undo: {riderName(state, lastScored.riderId)} — {lastScored.trick}
+              </button>
+            )}
+          </div>
+          {visibleEntries.length === 0 && (
+            <p style={{ color: "var(--text-muted, #888780)" }}>
+              {viewMode === "pending" ? "No tricks waiting for your score." : "No tricks logged in this heat yet."}
+            </p>
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {pendingEntries.map((e) => (
-              <Card key={e.id}>
-                <p style={{ margin: "0 0 10px 0", fontWeight: 500 }}>
-                  <RiderChip name={riderName(state, e.riderId)} color={heat && riderColorHex(state, heat, e.riderId)} /> — {e.trick}
-                </p>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <input
-                    type="number"
-                    min="0"
-                    max="10"
-                    step="0.5"
-                    placeholder="Score"
-                    style={{ width: 90 }}
-                    id={`score-${e.id}`}
-                    onKeyDown={onEnter(() => {
-                      const el = document.getElementById(`score-${e.id}`);
-                      if (el && el.value !== "") scoreTrick(e.id, Number(el.value));
-                    })}
-                  />
-                  <button
-                    style={btn(false)}
-                    onClick={() => {
-                      const el = document.getElementById(`score-${e.id}`);
-                      if (el && el.value !== "") scoreTrick(e.id, Number(el.value));
-                    }}
-                  >
-                    Submit
-                  </button>
-                  <button style={{ ...btn(false), marginLeft: "auto" }} onClick={() => scoreTrick(e.id, "skip")}>
-                    Didn't see it
-                  </button>
-                </div>
-              </Card>
-            ))}
+            {visibleEntries.map((e, idx) => {
+              const myScore = e.scores[judge.id];
+              const submit = () => {
+                const el = document.getElementById(`score-${e.id}`);
+                if (!el || el.value === "") return;
+                scoreTrick(e.id, Number(el.value));
+                setLastScored({ id: e.id, riderId: e.riderId, trick: e.trick });
+                if (viewMode === "pending") {
+                  const next = visibleEntries[idx + 1];
+                  if (next) {
+                    setTimeout(() => {
+                      const nextEl = document.getElementById(`score-${next.id}`);
+                      if (nextEl) nextEl.focus();
+                    }, 60);
+                  }
+                }
+              };
+              return (
+                <Card key={e.id}>
+                  <p style={{ margin: "0 0 10px 0", fontWeight: 500 }}>
+                    <RiderChip name={riderName(state, e.riderId)} color={heat && riderColorHex(state, heat, e.riderId)} /> — {e.trick}
+                    {viewMode === "all" && (
+                      <span style={{ fontSize: 12, color: "var(--text-muted, #888780)", marginLeft: 8 }}>
+                        your score: {myScore === "skip" ? "skip" : myScore === undefined ? "not yet" : myScore}
+                      </span>
+                    )}
+                  </p>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input
+                      type="number"
+                      min="0"
+                      max="10"
+                      step="0.5"
+                      placeholder="Score"
+                      defaultValue={typeof myScore === "number" ? myScore : ""}
+                      style={{ width: 90 }}
+                      id={`score-${e.id}`}
+                      key={`score-input-${e.id}-${myScore}`}
+                      onKeyDown={onEnter(submit)}
+                    />
+                    <button style={btn(false)} onClick={submit}>
+                      {viewMode === "all" && myScore !== undefined ? "Update" : "Submit"}
+                    </button>
+                    <button
+                      style={{ ...btn(false), marginLeft: "auto" }}
+                      onClick={() => {
+                        scoreTrick(e.id, "skip");
+                        setLastScored({ id: e.id, riderId: e.riderId, trick: e.trick });
+                      }}
+                    >
+                      Didn't see it
+                    </button>
+                  </div>
+                </Card>
+              );
+            })}
           </div>
         </div>
       )}
@@ -2197,6 +2378,8 @@ function BracketView({ state, onBack, compId }) {
 function CompetitionPicker({ onOpen }) {
   const [list, setList] = useState(null);
   const [newName, setNewName] = useState("");
+  const [restoreError, setRestoreError] = useState("");
+  const [restoreBusy, setRestoreBusy] = useState(false);
 
   useEffect(() => {
     let stop = false;
@@ -2224,6 +2407,37 @@ function CompetitionPicker({ onOpen }) {
     await saveIndex(next);
   };
 
+  const restoreAsNew = (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setRestoreError("");
+    setRestoreBusy(true);
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const bundle = JSON.parse(evt.target.result);
+        if (!bundle.state) throw new Error("Missing state");
+        const newId = uid();
+        const entry = { id: newId, name: bundle.state.compName || "Restored competition", createdAt: Date.now() };
+        const next = [...(list || []), entry];
+        setList(next);
+        await saveIndex(next);
+        await saveState(newId, bundle.state);
+        const entries = Object.entries(bundle.heatsData || {});
+        for (const [heatId, data] of entries) {
+          await saveHeat(newId, heatId, data);
+        }
+        onOpen(newId);
+      } catch {
+        setRestoreError("Couldn't read that file — make sure it's a backup exported from this app.");
+      } finally {
+        setRestoreBusy(false);
+      }
+    };
+    reader.readAsText(file);
+  };
+
   if (list === null) {
     return <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted, #888780)" }}>Loading…</div>;
   }
@@ -2240,6 +2454,15 @@ function CompetitionPicker({ onOpen }) {
           <input placeholder="e.g. KOL 26 — Men's Division" value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={onEnter(createCompetition)} style={{ flex: 1 }} />
           <button style={btn(true)} onClick={createCompetition}>Create</button>
         </div>
+      </Card>
+      <Card style={{ marginBottom: 16 }}>
+        <SectionLabel>Restore a backup</SectionLabel>
+        <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0 }}>
+          Adds it here as its own competition, under its original name — it won't overwrite anything.
+        </p>
+        <input type="file" accept=".json" onChange={restoreAsNew} disabled={restoreBusy} />
+        {restoreBusy && <p style={{ fontSize: 13, color: "var(--text-muted, #888780)" }}>Restoring…</p>}
+        {restoreError && <p style={{ fontSize: 13, color: "var(--text-danger, #A32D2D)" }}>{restoreError}</p>}
       </Card>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {list.slice().sort((a, b) => b.createdAt - a.createdAt).map((c) => (
@@ -2259,8 +2482,60 @@ function CompetitionPicker({ onOpen }) {
   );
 }
 
+const PICKER_PASSWORD_DEFAULT = "Soulgames";
+
+function PickerGate({ onOpen }) {
+  const [unlocked, setUnlocked] = useState(false);
+  const [pwInput, setPwInput] = useState("");
+  const [error, setError] = useState("");
+
+  const tryUnlock = () => {
+    if (pwInput === PICKER_PASSWORD_DEFAULT) {
+      setUnlocked(true);
+      setError("");
+    } else {
+      setError("Wrong password.");
+    }
+  };
+
+  if (!unlocked) {
+    return (
+      <div>
+        <h2 style={{ marginTop: 0, marginBottom: 12 }}>Kite competition judging</h2>
+        <Card>
+          <SectionLabel>Admin password required</SectionLabel>
+          <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0 }}>
+            Creating, opening, or deleting a competition needs the admin password. If you're a judge, spotter, or
+            here to watch, ask the organizer for the direct link to the specific competition instead.
+          </p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              type="password"
+              value={pwInput}
+              onChange={(e) => setPwInput(e.target.value)}
+              onKeyDown={onEnter(tryUnlock)}
+              placeholder="Admin password"
+              style={{ flex: 1 }}
+            />
+            <button style={btn(true)} onClick={tryUnlock}>Unlock</button>
+          </div>
+          {error && <p style={{ color: "var(--text-danger, #A32D2D)", fontSize: 13, marginTop: 8, marginBottom: 0 }}>{error}</p>}
+        </Card>
+      </div>
+    );
+  }
+
+  return <CompetitionPicker onOpen={onOpen} />;
+}
+
 export default function KiteCompApp() {
-  const [compId, setCompId] = useState(null);
+  const [compId, setCompId] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("comp") || null;
+    } catch {
+      return null;
+    }
+  });
   const [role, setRole] = useState(null);
   const [state, update, ready] = useSharedState(compId);
   const [storageOk, setStorageOk] = useState(true);
@@ -2270,6 +2545,24 @@ export default function KiteCompApp() {
     window.addEventListener("kite-comp-storage-status", handler);
     return () => window.removeEventListener("kite-comp-storage-status", handler);
   }, []);
+
+  const openComp = (id) => {
+    setCompId(id);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("comp", id);
+      window.history.replaceState({}, "", url);
+    } catch {}
+  };
+  const switchComp = () => {
+    setCompId(null);
+    setRole(null);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("comp");
+      window.history.replaceState({}, "", url);
+    } catch {}
+  };
 
   const storageBanner = !storageOk && (
     <div style={{ background: "var(--bg-danger, #FCEBEB)", color: "var(--text-danger, #A32D2D)", padding: "10px 14px", borderRadius: 10, marginBottom: 16, fontSize: 13, lineHeight: 1.4 }}>
@@ -2281,7 +2574,7 @@ export default function KiteCompApp() {
     return (
       <div style={{ maxWidth: 520, margin: "0 auto", padding: "1rem 0" }}>
         {storageBanner}
-        <CompetitionPicker onOpen={setCompId} />
+        <PickerGate onOpen={openComp} />
       </div>
     );
   }
@@ -2297,7 +2590,7 @@ export default function KiteCompApp() {
       {storageBanner}
       {!role && (
         <div>
-          <button onClick={() => setCompId(null)} style={{ ...btn(false), fontSize: 12, marginBottom: 12 }}>
+          <button onClick={switchComp} style={{ ...btn(false), fontSize: 12, marginBottom: 12 }}>
             ← Switch competition
           </button>
           <RoleSelect onPick={setRole} compName={state.compName} />
