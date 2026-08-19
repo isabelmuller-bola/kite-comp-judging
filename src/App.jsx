@@ -443,6 +443,27 @@ function Header({ title, onBack }) {
   );
 }
 
+function PublicView({ state, compId }) {
+  const [tab, setTab] = useState("bracket");
+  const [focusHeatId, setFocusHeatId] = useState(null);
+  const viewLiveHeat = (heatId) => {
+    setFocusHeatId(heatId);
+    setTab("leaderboard");
+  };
+
+  return (
+    <div>
+      <h2 style={{ marginTop: 0, marginBottom: 12 }}>{state.compName || "Kite competition judging"}</h2>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button style={btn(tab === "bracket")} onClick={() => setTab("bracket")}>Bracket</button>
+        <button style={btn(tab === "leaderboard")} onClick={() => setTab("leaderboard")}>Leaderboard</button>
+      </div>
+      {tab === "bracket" && <BracketView state={state} onBack={null} compId={compId} onViewHeat={viewLiveHeat} />}
+      {tab === "leaderboard" && <LeaderboardView state={state} onBack={null} compId={compId} focusHeatId={focusHeatId} />}
+    </div>
+  );
+}
+
 function RoleSelect({ onPick, compName }) {
   const roles = [
     { id: "admin", label: "Admin", desc: "Plan the competition and run it live" },
@@ -1126,32 +1147,47 @@ function AdminGate({ state, update, onBack, compId }) {
 }
 
 function ShareLinkCard({ compId }) {
-  const [copied, setCopied] = useState(false);
-  let link = "";
+  const [copiedInternal, setCopiedInternal] = useState(false);
+  const [copiedPublic, setCopiedPublic] = useState(false);
+  let internalLink = "";
+  let publicLink = "";
   try {
-    const url = new URL(window.location.href);
-    url.searchParams.set("comp", compId);
-    link = url.toString();
+    const url1 = new URL(window.location.href);
+    url1.searchParams.set("comp", compId);
+    url1.searchParams.delete("public");
+    internalLink = url1.toString();
+    const url2 = new URL(window.location.href);
+    url2.searchParams.set("comp", compId);
+    url2.searchParams.set("public", "1");
+    publicLink = url2.toString();
   } catch {}
 
-  const copy = async () => {
+  const copy = async (link, setFlag) => {
     try {
       await navigator.clipboard.writeText(link);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setFlag(true);
+      setTimeout(() => setFlag(false), 2000);
     } catch {}
   };
 
   return (
     <Card style={{ marginBottom: 16 }}>
       <SectionLabel>Share this competition</SectionLabel>
-      <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0 }}>
-        Send judges, spotters, and spectators this link — it opens straight into this competition without needing
-        the admin password.
+      <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0, marginBottom: 4, fontWeight: 500 }}>Internal link</p>
+      <p style={{ fontSize: 12, color: "var(--text-secondary, #5F5E5A)", marginTop: 0 }}>
+        For judges and spotters — lets them pick a role, including scoring. Only share with people you trust to do that.
+      </p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <input readOnly value={internalLink} onClick={(e) => e.target.select()} style={{ flex: 1, fontSize: 12 }} />
+        <button style={btn(copiedInternal)} onClick={() => copy(internalLink, setCopiedInternal)}>{copiedInternal ? "Copied" : "Copy"}</button>
+      </div>
+      <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0, marginBottom: 4, fontWeight: 500 }}>Public link</p>
+      <p style={{ fontSize: 12, color: "var(--text-secondary, #5F5E5A)", marginTop: 0 }}>
+        Bracket and live leaderboard only, no scoring roles visible — safe to post on social media.
       </p>
       <div style={{ display: "flex", gap: 8 }}>
-        <input readOnly value={link} onClick={(e) => e.target.select()} style={{ flex: 1, fontSize: 12 }} />
-        <button style={btn(copied)} onClick={copy}>{copied ? "Copied" : "Copy"}</button>
+        <input readOnly value={publicLink} onClick={(e) => e.target.select()} style={{ flex: 1, fontSize: 12 }} />
+        <button style={btn(copiedPublic)} onClick={() => copy(publicLink, setCopiedPublic)}>{copiedPublic ? "Copied" : "Copy"}</button>
       </div>
     </Card>
   );
@@ -2874,6 +2910,13 @@ export default function KiteCompApp() {
       return null;
     }
   });
+  const [isPublicMode] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("public") === "1";
+    } catch {
+      return false;
+    }
+  });
   const [role, setRole] = useState(null);
   const [focusHeatId, setFocusHeatId] = useState(null);
   const [state, update, ready] = useSharedState(compId);
@@ -2920,6 +2963,15 @@ export default function KiteCompApp() {
 
   if (!ready) {
     return <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted, #888780)" }}>Loading…</div>;
+  }
+
+  if (isPublicMode) {
+    return (
+      <div style={{ maxWidth: 520, margin: "0 auto", padding: "1rem 0" }}>
+        {storageBanner}
+        <PublicView state={state} compId={compId} />
+      </div>
+    );
   }
 
   const backToRoles = () => { setRole(null); setFocusHeatId(null); };
