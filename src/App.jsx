@@ -16,6 +16,7 @@ const emptyState = () => ({
   heats: [],
   riders: [],
   judges: [],
+  spotters: [],
   tricks: [...DEFAULT_TRICKS],
   trikotColors: [],
   adminPassword: "Soulgames",
@@ -187,6 +188,11 @@ function riderColorHex(state, heat, riderId) {
   if (!heat || !state.trikotColors || state.trikotColors.length === 0) return null;
   const idx = heat.slots.findIndex((sl) => resolveSlotRider(state, sl) === riderId);
   if (idx === -1) return null;
+  const slot = heat.slots[idx];
+  if (slot.colorOverride) {
+    const c = state.trikotColors.find((c) => c.id === slot.colorOverride);
+    if (c) return c.hex;
+  }
   return state.trikotColors[idx % state.trikotColors.length].hex;
 }
 function riderName(state, id) {
@@ -1199,10 +1205,21 @@ function AdminView({ state, update, onBack, compId }) {
         h.id === heatId ? { ...h, slots: h.slots.map((sl) => (sl.id === slotId ? { ...sl, override: riderId || null } : sl)) } : h
       ),
     }));
+  const setSlotColor = (heatId, slotId, colorId) =>
+    update((s) => ({
+      ...s,
+      heats: s.heats.map((h) =>
+        h.id === heatId ? { ...h, slots: h.slots.map((sl) => (sl.id === slotId ? { ...sl, colorOverride: colorId || null } : sl)) } : h
+      ),
+    }));
 
   const removeJudge = (id) => update((s) => ({ ...s, judges: s.judges.filter((j) => j.id !== id) }));
   const generateJudgePin = (id) => update((s) => ({ ...s, judges: s.judges.map((j) => (j.id === id ? { ...j, pendingPin: genPin() } : j)) }));
   const clearJudgePin = (id) => update((s) => ({ ...s, judges: s.judges.map((j) => (j.id === id ? { ...j, pendingPin: null } : j)) }));
+  const removeSpotter = (id) => update((s) => ({ ...s, spotters: (s.spotters || []).filter((sp) => sp.id !== id) }));
+  const generateSpotterPin = (id) => update((s) => ({ ...s, spotters: (s.spotters || []).map((sp) => (sp.id === id ? { ...sp, pendingPin: genPin() } : sp)) }));
+  const clearSpotterPin = (id) => update((s) => ({ ...s, spotters: (s.spotters || []).map((sp) => (sp.id === id ? { ...sp, pendingPin: null } : sp)) }));
+  const [actingAsSpotter, setActingAsSpotter] = useState(false);
 
   const addTrick = () => {
     if (!newTrick.trim()) return;
@@ -1316,8 +1333,13 @@ function AdminView({ state, update, onBack, compId }) {
     { id: "live", label: "Live control" },
     { id: "tricks", label: "Tricks" },
     { id: "judges", label: "Judges" },
+    { id: "spotters", label: "Spotters" },
     { id: "backup", label: "Backup" },
   ];
+
+  if (actingAsSpotter) {
+    return <SpotterConsole state={state} onBack={() => setActingAsSpotter(false)} compId={compId} onSwitchSpotter={null} />;
+  }
 
   return (
     <div>
@@ -1476,20 +1498,36 @@ function AdminView({ state, update, onBack, compId }) {
                   </span>
                   <Pill tone={h.status === "active" ? "accent" : h.status === "complete" ? "success" : h.status === "awaiting-variety" ? "danger" : "gray"}>{h.status}</Pill>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
                   {h.slots.map((sl) => {
                     const rid = resolveSlotRider(state, sl);
+                    const color = rid ? riderColorHex(state, h, rid) : null;
                     return (
-                      <div key={sl.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13 }}>
-                        <span style={{ color: "var(--text-secondary, #5F5E5A)" }}>{slotLabel(state, sl)}</span>
-                        <select value={sl.override || ""} onChange={(e) => setOverride(h.id, sl.id, e.target.value)} style={{ fontSize: 13 }}>
-                          <option value="">{rid ? riderName(state, rid) : "TBD"}</option>
-                          {state.riders.map((r) => (
-                            <option key={r.id} value={r.id}>
-                              Override: {r.name}
-                            </option>
-                          ))}
-                        </select>
+                      <div key={sl.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ color: "var(--text-secondary, #5F5E5A)" }}>{slotLabel(state, sl)}</span>
+                          {rid && <RiderChip name={riderName(state, rid)} color={color} size={12} />}
+                        </span>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          {(state.trikotColors || []).length > 0 && (
+                            <select value={sl.colorOverride || ""} onChange={(e) => setSlotColor(h.id, sl.id, e.target.value)} style={{ fontSize: 12 }}>
+                              <option value="">Trikot: auto</option>
+                              {state.trikotColors.map((c) => (
+                                <option key={c.id} value={c.id}>
+                                  Trikot: {c.name}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          <select value={sl.override || ""} onChange={(e) => setOverride(h.id, sl.id, e.target.value)} style={{ fontSize: 13 }}>
+                            <option value="">{rid ? riderName(state, rid) : "TBD"}</option>
+                            {state.riders.map((r) => (
+                              <option key={r.id} value={r.id}>
+                                Override: {r.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                       </div>
                     );
                   })}
@@ -1624,6 +1662,41 @@ function AdminView({ state, update, onBack, compId }) {
         </div>
       )}
 
+      {tab === "spotters" && (
+        <div>
+          <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0, marginBottom: 14 }}>
+            Same idea as judges — spotters need an admin-issued code to get in, so an audience member can't
+            pretend to be a spotter and spam the judges or burn through riders' trick attempts. You (the admin) can
+            always act as a spotter yourself without any of this — see the button below.
+          </p>
+          <button style={{ ...btn(true), marginBottom: 16 }} onClick={() => setActingAsSpotter(true)}>
+            Act as spotter (no approval needed)
+          </button>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {(state.spotters || []).length === 0 && <p style={{ color: "var(--text-muted, #888780)" }}>No spotters have registered yet.</p>}
+            {(state.spotters || []).map((sp) => (
+              <div key={sp.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", border: "0.5px solid var(--border, #D9D7CE)", borderRadius: 8, flexWrap: "wrap", gap: 8 }}>
+                <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  {sp.name} <Pill tone={sp.status === "approved" ? "success" : "gray"}>{sp.status}</Pill>
+                  {sp.pendingPin && (
+                    <span style={{ fontSize: 20, fontWeight: 700, letterSpacing: "0.08em", color: "var(--text-accent, #185FA5)" }}>{sp.pendingPin}</span>
+                  )}
+                </span>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button style={btn(false)} onClick={() => generateSpotterPin(sp.id)}>
+                    {sp.pendingPin ? "New code" : "Generate code"}
+                  </button>
+                  {sp.pendingPin && (
+                    <button style={btn(false)} onClick={() => clearSpotterPin(sp.id)}>Hide</button>
+                  )}
+                  <IconBtn icon="Delete" onClick={() => removeSpotter(sp.id)} label="Remove spotter" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {tab === "backup" && (
         <div>
           <Card style={{ marginBottom: 16 }}>
@@ -1686,7 +1759,7 @@ function closestTricks(text, tricks, n = 3) {
 const SpeechRecognitionCtor =
   typeof window !== "undefined" ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
 
-function SpotterView({ state, onBack, compId }) {
+function SpotterConsole({ state, onBack, compId, onSwitchSpotter }) {
   const liveHeats = state.heats.filter((h) => h.status === "active");
   const [heatId, setHeatId] = useState(liveHeats[0]?.id || "");
   const [selectedRider, setSelectedRider] = useState(null);
@@ -1757,6 +1830,7 @@ function SpotterView({ state, onBack, compId }) {
     return (
       <div>
         <Header title="Spotter" onBack={onBack} />
+        {onSwitchSpotter && <button onClick={onSwitchSpotter} style={{ ...btn(false), fontSize: 12, marginBottom: 12 }}>Not you? Switch spotter</button>}
         <p style={{ color: "var(--text-muted, #888780)" }}>No heat is currently active. Ask the admin to start one.</p>
       </div>
     );
@@ -1765,6 +1839,7 @@ function SpotterView({ state, onBack, compId }) {
   return (
     <div>
       <Header title="Spotter" onBack={onBack} />
+      {onSwitchSpotter && <button onClick={onSwitchSpotter} style={{ ...btn(false), fontSize: 12, marginBottom: 12 }}>Not you? Switch spotter</button>}
       {liveHeats.length > 1 && (
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           {liveHeats.map((h) => (
@@ -1883,6 +1958,126 @@ function SpotterView({ state, onBack, compId }) {
 
 function genPin() {
   return String(Math.floor(1000 + Math.random() * 9000));
+}
+
+function SpotterView({ state, update, onBack, compId }) {
+  const [profile, setProfile] = useState(null);
+  const [profileLoaded, setProfileLoaded] = useState(false);
+  const [pickedSpotterId, setPickedSpotterId] = useState(null);
+  const [pinInput, setPinInput] = useState("");
+  const [pinError, setPinError] = useState("");
+  const [newName, setNewName] = useState("");
+  const spotterKey = `kite-comp:my-spotter:${compId}`;
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(spotterKey);
+      if (raw) setProfile(JSON.parse(raw));
+    } catch {}
+    setProfileLoaded(true);
+  }, [spotterKey]);
+
+  const switchSpotter = () => {
+    try {
+      localStorage.removeItem(spotterKey);
+    } catch {}
+    setProfile(null);
+    setPickedSpotterId(null);
+    setPinInput("");
+    setPinError("");
+  };
+
+  const registerNewSpotter = () => {
+    if (!newName.trim()) return;
+    const sp = { id: uid(), name: newName.trim(), status: "pending", pendingPin: null };
+    update((s) => ({ ...s, spotters: [...(s.spotters || []), sp] }));
+    setPickedSpotterId(sp.id);
+    setNewName("");
+  };
+
+  const submitPin = () => {
+    const sp = (state.spotters || []).find((x) => x.id === pickedSpotterId);
+    if (!sp) return;
+    if (!sp.pendingPin || pinInput.trim() !== sp.pendingPin) {
+      setPinError("That code doesn't match. Ask the admin for the current one.");
+      return;
+    }
+    const authed = { id: sp.id, name: sp.name };
+    setProfile(authed);
+    try {
+      localStorage.setItem(spotterKey, JSON.stringify(authed));
+    } catch {}
+    update((s) => ({ ...s, spotters: (s.spotters || []).map((x) => (x.id === sp.id ? { ...x, status: "approved", pendingPin: null } : x)) }));
+    setPickedSpotterId(null);
+    setPinInput("");
+    setPinError("");
+  };
+
+  if (!profileLoaded) {
+    return <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted, #888780)" }}>Loading…</div>;
+  }
+
+  if (profile) {
+    const liveSpotter = (state.spotters || []).find((x) => x.id === profile.id);
+    if (liveSpotter && liveSpotter.status === "approved") {
+      return <SpotterConsole state={state} onBack={onBack} compId={compId} onSwitchSpotter={switchSpotter} />;
+    }
+  }
+
+  if (pickedSpotterId) {
+    const sp = (state.spotters || []).find((x) => x.id === pickedSpotterId);
+    return (
+      <div>
+        <Header title="Spotter" onBack={onBack} />
+        <Card>
+          <SectionLabel>Access code for {sp ? sp.name : "you"}</SectionLabel>
+          <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0 }}>
+            Ask the admin for the code — it's shown on their screen next to your name.
+          </p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              value={pinInput}
+              onChange={(e) => setPinInput(e.target.value)}
+              onKeyDown={onEnter(submitPin)}
+              placeholder="Access code"
+              inputMode="numeric"
+              style={{ flex: 1 }}
+            />
+            <button style={btn(true)} onClick={submitPin}>Unlock</button>
+          </div>
+          {pinError && <p style={{ color: "var(--text-danger, #A32D2D)", fontSize: 13, marginTop: 8, marginBottom: 0 }}>{pinError}</p>}
+          <button onClick={() => setPickedSpotterId(null)} style={{ ...btn(false), fontSize: 12, marginTop: 10 }}>← Not me, pick again</button>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Header title="Spotter" onBack={onBack} />
+      <Card style={{ marginBottom: 16 }}>
+        <SectionLabel>Who are you?</SectionLabel>
+        {(state.spotters || []).length === 0 && <p style={{ fontSize: 13, color: "var(--text-muted, #888780)" }}>No spotters registered yet — add your name below.</p>}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {(state.spotters || []).map((sp) => (
+            <button key={sp.id} onClick={() => setPickedSpotterId(sp.id)} style={btn(false)}>
+              {sp.name}
+            </button>
+          ))}
+        </div>
+      </Card>
+      <Card>
+        <SectionLabel>Not on the list</SectionLabel>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={onEnter(registerNewSpotter)} placeholder="Your name" style={{ flex: 1 }} />
+          <button style={btn(false)} onClick={registerNewSpotter}>Register</button>
+        </div>
+        <p style={{ fontSize: 12, color: "var(--text-muted, #888780)", marginTop: 10, marginBottom: 0 }}>
+          The admin will need to give you an access code either way — this just adds your name so they can generate one.
+        </p>
+      </Card>
+    </div>
+  );
 }
 
 function JudgeView({ state, update, onBack, compId }) {
@@ -2075,7 +2270,7 @@ function JudgeScoring({ state, judge, onBack, compId, onSwitchJudge }) {
 
   const alreadySubmittedVariety = riderIds.length > 0 && riderIds.every((rid) => (data.variety || {})[rid]?.[judge.id] !== undefined);
   const pendingEntries = (data.log || []).filter((e) => e.scores[judge.id] === undefined && !isCrash(e.trick)).slice().reverse();
-  const allEntries = (data.log || []).filter((e) => !isCrash(e.trick)).slice().reverse();
+  const allEntries = (data.log || []).slice().reverse();
   const visibleEntries = viewMode === "pending" ? pendingEntries : allEntries;
 
   return (
@@ -2150,6 +2345,7 @@ function JudgeScoring({ state, judge, onBack, compId, onSwitchJudge }) {
           )}
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {visibleEntries.map((e, idx) => {
+              const crash = isCrash(e.trick);
               const myScore = e.scores[judge.id];
               const submit = () => {
                 const el = document.getElementById(`score-${e.id}`);
@@ -2170,38 +2366,55 @@ function JudgeScoring({ state, judge, onBack, compId, onSwitchJudge }) {
                 <Card key={e.id}>
                   <p style={{ margin: "0 0 10px 0", fontWeight: 500 }}>
                     <RiderChip name={riderName(state, e.riderId)} color={heat && riderColorHex(state, heat, e.riderId)} /> — {e.trick}
-                    {viewMode === "all" && (
+                    {viewMode === "all" && !crash && (
                       <span style={{ fontSize: 12, color: "var(--text-muted, #888780)", marginLeft: 8 }}>
                         your score: {myScore === "skip" ? "skip" : myScore === undefined ? "not yet" : myScore}
                       </span>
                     )}
                   </p>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <input
-                      type="number"
-                      min="0"
-                      max="10"
-                      step="0.5"
-                      placeholder="Score"
-                      defaultValue={typeof myScore === "number" ? myScore : ""}
-                      style={{ width: 90 }}
-                      id={`score-${e.id}`}
-                      key={`score-input-${e.id}-${myScore}`}
-                      onKeyDown={onEnter(submit)}
-                    />
-                    <button style={btn(false)} onClick={submit}>
-                      {viewMode === "all" && myScore !== undefined ? "Update" : "Submit"}
-                    </button>
-                    <button
-                      style={{ ...btn(false), marginLeft: "auto" }}
-                      onClick={() => {
-                        scoreTrick(e.id, "skip");
-                        setLastScored({ id: e.id, riderId: e.riderId, trick: e.trick });
+                  {crash ? (
+                    <div
+                      style={{
+                        display: "inline-block",
+                        padding: "6px 14px",
+                        borderRadius: 8,
+                        background: "var(--bg-danger, #FCEBEB)",
+                        color: "var(--text-danger, #A32D2D)",
+                        fontWeight: 700,
+                        letterSpacing: "0.04em",
+                        fontSize: 13,
                       }}
                     >
-                      Didn't see it
-                    </button>
-                  </div>
+                      CRASH — 0 points, counts as an attempt
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <input
+                        type="number"
+                        min="0"
+                        max="10"
+                        step="0.5"
+                        placeholder="Score"
+                        defaultValue={typeof myScore === "number" ? myScore : ""}
+                        style={{ width: 90 }}
+                        id={`score-${e.id}`}
+                        key={`score-input-${e.id}-${myScore}`}
+                        onKeyDown={onEnter(submit)}
+                      />
+                      <button style={btn(false)} onClick={submit}>
+                        {viewMode === "all" && myScore !== undefined ? "Update" : "Submit"}
+                      </button>
+                      <button
+                        style={{ ...btn(false), marginLeft: "auto" }}
+                        onClick={() => {
+                          scoreTrick(e.id, "skip");
+                          setLastScored({ id: e.id, riderId: e.riderId, trick: e.trick });
+                        }}
+                      >
+                        Didn't see it
+                      </button>
+                    </div>
+                  )}
                 </Card>
               );
             })}
@@ -2597,7 +2810,7 @@ export default function KiteCompApp() {
         </div>
       )}
       {role === "admin" && <AdminGate state={state} update={update} onBack={backToRoles} compId={compId} />}
-      {role === "spotter" && <SpotterView state={state} onBack={backToRoles} compId={compId} />}
+      {role === "spotter" && <SpotterView state={state} update={update} onBack={backToRoles} compId={compId} />}
       {role === "judge" && <JudgeView state={state} update={update} onBack={backToRoles} compId={compId} />}
       {role === "leaderboard" && <LeaderboardView state={state} onBack={backToRoles} compId={compId} />}
       {role === "bracket" && <BracketView state={state} onBack={backToRoles} compId={compId} />}
