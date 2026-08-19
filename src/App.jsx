@@ -1109,14 +1109,7 @@ function AdminGate({ state, update, onBack, compId }) {
         <Card>
           <SectionLabel>Password required</SectionLabel>
           <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            <input
-              type="password"
-              value={pwInput}
-              onChange={(e) => setPwInput(e.target.value)}
-              onKeyDown={onEnter(tryUnlock)}
-              placeholder="Admin password"
-              style={{ flex: 1 }}
-            />
+            <PasswordField value={pwInput} onChange={(e) => setPwInput(e.target.value)} onKeyDown={onEnter(tryUnlock)} placeholder="Admin password" />
             <button style={btn(true)} onClick={tryUnlock}>Unlock</button>
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text-secondary, #5F5E5A)" }}>
@@ -2561,16 +2554,14 @@ function LeaderboardView({ state, onBack, compId, focusHeatId }) {
                         </button>
                         {isOpen && (
                           <div style={{ marginTop: 4, marginBottom: 4, padding: "8px 10px", background: "var(--surface-1, #F1EFE8)", borderRadius: 8, fontSize: 12 }}>
-                            <p style={{ margin: "0 0 4px 0", fontWeight: 500 }}>{e.trick}</p>
-                            {Object.keys(e.scores || {}).length === 0 ? (
-                              <p style={{ margin: 0, color: "var(--text-muted, #888780)" }}>No judge scores yet.</p>
-                            ) : (
-                              Object.entries(e.scores).map(([judgeId, val]) => (
-                                <span key={judgeId} style={{ marginRight: 10, color: "var(--text-secondary, #5F5E5A)" }}>
-                                  {state.judges.find((j) => j.id === judgeId)?.name || "Judge"}: {val === "skip" ? "skip" : val}
+                            <p style={{ margin: 0, fontWeight: 500 }}>
+                              {e.trick}
+                              {!crash && (
+                                <span style={{ fontWeight: 400, color: "var(--text-secondary, #5F5E5A)", marginLeft: 8 }}>
+                                  {e._score === null ? "no scores yet" : `${round1(e._score)} avg`}
                                 </span>
-                              ))
-                            )}
+                              )}
+                            </p>
                           </div>
                         )}
                       </div>
@@ -2802,15 +2793,47 @@ function CompetitionPicker({ onOpen }) {
 
 const PICKER_PASSWORD_DEFAULT = "Soulgames";
 
+function PasswordField({ value, onChange, onKeyDown, placeholder, style }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div style={{ display: "flex", gap: 6, flex: 1, ...style }}>
+      <input
+        type={visible ? "text" : "password"}
+        value={value}
+        onChange={onChange}
+        onKeyDown={onKeyDown}
+        placeholder={placeholder}
+        style={{ flex: 1 }}
+      />
+      <button type="button" onClick={() => setVisible((v) => !v)} style={{ ...btn(false), fontSize: 12, padding: "8px 10px" }}>
+        {visible ? "Hide" : "Show"}
+      </button>
+    </div>
+  );
+}
+
 function PickerGate({ onOpen }) {
-  const [unlocked, setUnlocked] = useState(false);
+  const pickerKey = "kite-comp:picker-unlock";
+  const [unlocked, setUnlocked] = useState(() => {
+    try {
+      return localStorage.getItem(pickerKey) === PICKER_PASSWORD_DEFAULT;
+    } catch {
+      return false;
+    }
+  });
   const [pwInput, setPwInput] = useState("");
   const [error, setError] = useState("");
+  const [remember, setRemember] = useState(true);
 
   const tryUnlock = () => {
     if (pwInput === PICKER_PASSWORD_DEFAULT) {
       setUnlocked(true);
       setError("");
+      if (remember) {
+        try {
+          localStorage.setItem(pickerKey, pwInput);
+        } catch {}
+      }
     } else {
       setError("Wrong password.");
     }
@@ -2826,17 +2849,14 @@ function PickerGate({ onOpen }) {
             Creating, opening, or deleting a competition needs the admin password. If you're a judge, spotter, or
             here to watch, ask the organizer for the direct link to the specific competition instead.
           </p>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              type="password"
-              value={pwInput}
-              onChange={(e) => setPwInput(e.target.value)}
-              onKeyDown={onEnter(tryUnlock)}
-              placeholder="Admin password"
-              style={{ flex: 1 }}
-            />
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <PasswordField value={pwInput} onChange={(e) => setPwInput(e.target.value)} onKeyDown={onEnter(tryUnlock)} placeholder="Admin password" />
             <button style={btn(true)} onClick={tryUnlock}>Unlock</button>
           </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text-secondary, #5F5E5A)" }}>
+            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+            Remember on this device
+          </label>
           {error && <p style={{ color: "var(--text-danger, #A32D2D)", fontSize: 13, marginTop: 8, marginBottom: 0 }}>{error}</p>}
         </Card>
       </div>
