@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
+    <title>Kite Competition Judging</title>
+    <style>
+      :root {
+        --surface-2: #FFFFFF; --surface-1: #F1EFE8; --surface-0: #FAF9F5;
+        --text-primary: #2C2C2A; --text-secondary: #5F5E5A; --text-muted: #888780;
+        --text-accent: #185FA5; --text-danger: #A32D2D; --text-success: #3B6D11; --text-warning: #854F0B;
+        --border: #D9D7CE; --border-strong: #C7C5BC; --border-accent: #378ADD; --border-danger: #E24B4A;
+        --bg-accent: #E6F1FB; --bg-accent-muted: #EAF1FB; --bg-danger: #FCEBEB; --bg-success: #EAF3DE; --bg-warning: #FAEEDA;
+        --radius: 8px;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background: var(--surface-0);
+        color: var(--text-primary);
+        padding: 16px;
+      }
+      input, select, button { font-family: inherit; font-size: 14px; padding: 8px 10px; border-radius: var(--radius); border: 1px solid var(--border-strong); background: #fff; }
+      button { cursor: pointer; }
+      h2 { font-size: 20px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
