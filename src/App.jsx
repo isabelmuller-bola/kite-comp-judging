@@ -1874,6 +1874,19 @@ function SpotterConsole({ state, onBack, compId, onSwitchSpotter }) {
   const comboName = state.tricks.filter((t) => comboTags.includes(t)).join(" ");
   const canPickTrick = selectedRider && selectedSide;
 
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key !== "Enter") return;
+      const tag = document.activeElement?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return; // let those fields handle their own Enter
+      if (canPickTrick && comboTags.length > 0) {
+        sendTrick(comboName);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [canPickTrick, comboTags, comboName, sendTrick]);
+
   const startListening = () => {
     if (!SpeechRecognitionCtor || !canPickTrick || listening) return;
     const rec = new SpeechRecognitionCtor();
@@ -2005,7 +2018,14 @@ function SpotterConsole({ state, onBack, compId, onSwitchSpotter }) {
         </div>
       )}
       <div style={{ display: "flex", gap: 8 }}>
-        <input placeholder="Custom trick" value={customTrick} onChange={(e) => setCustomTrick(e.target.value)} disabled={!canPickTrick} style={{ flex: 1 }} />
+        <input
+          placeholder="Custom trick"
+          value={customTrick}
+          onChange={(e) => setCustomTrick(e.target.value)}
+          onKeyDown={onEnter(() => customTrick.trim() && sendTrick(customTrick.trim()))}
+          disabled={!canPickTrick}
+          style={{ flex: 1 }}
+        />
         <button style={btn(false)} disabled={!canPickTrick || !customTrick.trim()} onClick={() => sendTrick(customTrick.trim())}>
           Send
         </button>
