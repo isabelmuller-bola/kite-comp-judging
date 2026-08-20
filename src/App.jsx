@@ -223,6 +223,7 @@ function useSharedState(compId, pollMs = 10000) {
   const pendingRef = useRef(null);
   const writingRef = useRef(false);
   const stateRef = useRef(state);
+  const instanceIdRef = useRef(uid());
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
@@ -261,7 +262,7 @@ function useSharedState(compId, pollMs = 10000) {
     refresh();
 
     const channel = supabase
-      .channel(`comp_state:${compId}`)
+      .channel(`comp_state:${compId}:${instanceIdRef.current}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "comp_state", filter: `comp_id=eq.${compId}` },
@@ -305,6 +306,7 @@ function useHeatData(compId, heatId, pollMs = 8000) {
   const pendingRef = useRef(null);
   const writingRef = useRef(false);
   const dataRef = useRef(data);
+  const instanceIdRef = useRef(uid());
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
@@ -341,7 +343,7 @@ function useHeatData(compId, heatId, pollMs = 8000) {
     refresh();
 
     const channel = supabase
-      .channel(`heat_data:${compId}:${heatId}`)
+      .channel(`heat_data:${compId}:${heatId}:${instanceIdRef.current}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "heat_data", filter: `comp_id=eq.${compId}` },
