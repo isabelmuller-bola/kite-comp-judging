@@ -519,16 +519,25 @@ function onEnter(fn) {
   };
 }
 
-function PlanningTab({ state, update }) {
+function PlanningTab({ state, update, compId }) {
   const [nameDraft, setNameDraft] = useState(state.compName);
   const [roundName, setRoundName] = useState("");
   const [heatCount, setHeatCount] = useState(4);
   const [maxAttempts, setMaxAttempts] = useState(8);
   const [slotDrafts, setSlotDrafts] = useState({});
+  const [renameSaved, setRenameSaved] = useState(false);
 
-  const setCompName = () => {
+  const setCompName = async () => {
     if (!nameDraft.trim()) return;
-    update((s) => ({ ...s, compName: nameDraft.trim() }));
+    const name = nameDraft.trim();
+    update((s) => ({ ...s, compName: name }));
+    try {
+      const { list } = await loadIndex();
+      const next = list.map((c) => (c.id === compId ? { ...c, name } : c));
+      await saveIndex(next);
+    } catch {}
+    setRenameSaved(true);
+    setTimeout(() => setRenameSaved(false), 2000);
   };
 
   const addRound = () => {
@@ -660,21 +669,22 @@ function PlanningTab({ state, update }) {
 
   return (
     <div>
-      {!state.compName && (
-        <Card style={{ marginBottom: 16 }}>
-          <SectionLabel>Competition name</SectionLabel>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              placeholder="e.g. KOL 26 — Men's Division"
-              value={nameDraft}
-              onChange={(e) => setNameDraft(e.target.value)}
-              onKeyDown={onEnter(setCompName)}
-              style={{ flex: 1 }}
-            />
-            <button style={btn(false)} onClick={setCompName}>Set name</button>
-          </div>
-        </Card>
-      )}
+      <Card style={{ marginBottom: 16 }}>
+        <SectionLabel>Competition name</SectionLabel>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            placeholder="e.g. KOL 26 — Men's Division"
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onKeyDown={onEnter(setCompName)}
+            style={{ flex: 1 }}
+          />
+          <button style={btn(renameSaved)} onClick={setCompName}>{renameSaved ? "Saved" : state.compName ? "Rename" : "Set name"}</button>
+        </div>
+        <p style={{ fontSize: 12, color: "var(--text-muted, #888780)", marginTop: 8, marginBottom: 0 }}>
+          Updates the name everywhere, including the competition picker list.
+        </p>
+      </Card>
 
       {state.compName && (
         <>
@@ -1409,7 +1419,7 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
         ))}
       </div>
 
-      {tab === "plan" && <PlanningTab state={state} update={update} />}
+      {tab === "plan" && <PlanningTab state={state} update={update} compId={compId} />}
 
       {tab === "riders" && (
         <div>
@@ -2752,6 +2762,25 @@ function CompetitionPicker({ onOpen }) {
     await saveIndex(next);
   };
 
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const startRename = (c) => {
+    setRenamingId(c.id);
+    setRenameDraft(c.name);
+  };
+  const saveRename = async (id) => {
+    if (!renameDraft.trim()) return;
+    const name = renameDraft.trim();
+    const next = (list || []).map((c) => (c.id === id ? { ...c, name } : c));
+    setList(next);
+    await saveIndex(next);
+    try {
+      const { state: compState } = await loadState(id);
+      await saveState(id, { ...compState, compName: name });
+    } catch {}
+    setRenamingId(null);
+  };
+
   const restoreAsNew = (e) => {
     const file = e.target.files[0];
     e.target.value = "";
@@ -2810,17 +2839,32 @@ function CompetitionPicker({ onOpen }) {
         {restoreError && <p style={{ fontSize: 13, color: "var(--text-danger, #A32D2D)" }}>{restoreError}</p>}
       </Card>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {list.slice().sort((a, b) => b.createdAt - a.createdAt).map((c) => (
-          <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", border: "0.5px solid var(--border, #D9D7CE)", borderRadius: 8 }}>
-            <button onClick={() => onOpen(c.id)} style={{ ...btn(false), border: "none", background: "none", padding: 0, textAlign: "left", fontSize: 15 }}>
-              {c.name}
-            </button>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span style={{ fontSize: 12, color: "var(--text-muted, #888780)" }}>{new Date(c.createdAt).toLocaleDateString()}</span>
-              <IconBtn icon="Delete" onClick={() => deleteCompetition(c.id)} label="Delete competition" />
+        {list.slice().sort((a, b) => b.createdAt - a.createdAt).map((c) =>
+          renamingId === c.id ? (
+            <div key={c.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "10px 14px", border: "0.5px solid var(--border-accent, #378ADD)", borderRadius: 8 }}>
+              <input
+                value={renameDraft}
+                onChange={(e) => setRenameDraft(e.target.value)}
+                onKeyDown={onEnter(() => saveRename(c.id))}
+                style={{ flex: 1, fontSize: 15 }}
+                autoFocus
+              />
+              <button style={btn(true)} onClick={() => saveRename(c.id)}>Save</button>
+              <button style={btn(false)} onClick={() => setRenamingId(null)}>Cancel</button>
             </div>
-          </div>
-        ))}
+          ) : (
+            <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", border: "0.5px solid var(--border, #D9D7CE)", borderRadius: 8 }}>
+              <button onClick={() => onOpen(c.id)} style={{ ...btn(false), border: "none", background: "none", padding: 0, textAlign: "left", fontSize: 15 }}>
+                {c.name}
+              </button>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontSize: 12, color: "var(--text-muted, #888780)" }}>{new Date(c.createdAt).toLocaleDateString()}</span>
+                <button onClick={() => startRename(c)} style={{ ...btn(false), fontSize: 12, padding: "6px 10px" }}>Rename</button>
+                <IconBtn icon="Delete" onClick={() => deleteCompetition(c.id)} label="Delete competition" />
+              </div>
+            </div>
+          )
+        )}
         {list.length === 0 && <p style={{ color: "var(--text-muted, #888780)" }}>No saved competitions yet.</p>}
       </div>
     </div>
