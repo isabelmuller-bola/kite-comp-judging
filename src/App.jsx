@@ -978,7 +978,7 @@ function HeatEntriesPanel({ state, heat, compId }) {
             />
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               {approvedJudges.map((j) => {
-                const val = e.scores[j.id];
+                const val = (e.scores || {})[j.id];
                 const cellKey = `${e.id}:${j.id}`;
                 if (editingCell === cellKey) {
                   return (
@@ -2358,7 +2358,7 @@ function JudgeScoring({ state, judge, onBack, compId, onSwitchJudge }) {
   };
 
   const alreadySubmittedVariety = riderIds.length > 0 && riderIds.every((rid) => (data.variety || {})[rid]?.[judge.id] !== undefined);
-  const pendingEntries = (data.log || []).filter((e) => e.scores[judge.id] === undefined && !isCrash(e.trick)).slice().reverse();
+  const pendingEntries = (data.log || []).filter((e) => (e.scores || {})[judge.id] === undefined && !isCrash(e.trick)).slice().reverse();
   const allEntries = (data.log || []).slice().reverse();
   const visibleEntries = viewMode === "pending" ? pendingEntries : allEntries;
 
@@ -2435,7 +2435,7 @@ function JudgeScoring({ state, judge, onBack, compId, onSwitchJudge }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {visibleEntries.map((e, idx) => {
               const crash = isCrash(e.trick);
-              const myScore = e.scores[judge.id];
+              const myScore = (e.scores || {})[judge.id];
               const submit = () => {
                 const el = document.getElementById(`score-${e.id}`);
                 if (!el || el.value === "") return;
@@ -2966,7 +2966,55 @@ function PickerGate({ onOpen }) {
   return <CompetitionPicker onOpen={onOpen} />;
 }
 
-export default function KiteCompApp() {
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    // eslint-disable-next-line no-console
+    console.error("Kite comp app crashed:", error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ maxWidth: 480, margin: "2rem auto", padding: "1.5rem", fontFamily: "inherit" }}>
+          <h2 style={{ marginTop: 0 }}>Something went wrong</h2>
+          <p style={{ color: "var(--text-secondary, #5F5E5A)" }}>
+            This screen hit an unexpected error instead of loading. Your data is safe — nothing here gets lost, this
+            is just a display problem.
+          </p>
+          <details style={{ fontSize: 12, color: "var(--text-muted, #888780)", marginBottom: 12 }}>
+            <summary>Technical details</summary>
+            <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{String(this.state.error && this.state.error.stack || this.state.error)}</pre>
+          </details>
+          <div style={{ display: "flex", gap: 8 }}>
+            {this.props.onBack && (
+              <button
+                onClick={() => {
+                  this.setState({ error: null });
+                  this.props.onBack();
+                }}
+                style={{ padding: "10px 16px", borderRadius: 8, border: "1px solid #378ADD", background: "#E6F1FB", color: "#185FA5", cursor: "pointer" }}
+              >
+                ← Back
+              </button>
+            )}
+            <button onClick={() => window.location.reload()} style={{ padding: "10px 16px", borderRadius: 8, border: "1px solid #C7C5BC", background: "#F1EFE8", cursor: "pointer" }}>
+              Reload
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function KiteCompAppInner() {
   const [compId, setCompId] = useState(() => {
     try {
       return new URLSearchParams(window.location.search).get("comp") || null;
@@ -3055,11 +3103,39 @@ export default function KiteCompApp() {
           <RoleSelect onPick={setRole} compName={state.compName} />
         </div>
       )}
-      {role === "admin" && <AdminGate state={state} update={update} onBack={backToRoles} compId={compId} />}
-      {role === "spotter" && <SpotterView state={state} update={update} onBack={backToRoles} compId={compId} />}
-      {role === "judge" && <JudgeView state={state} update={update} onBack={backToRoles} compId={compId} />}
-      {role === "leaderboard" && <LeaderboardView state={state} onBack={backToRoles} compId={compId} focusHeatId={focusHeatId} />}
-      {role === "bracket" && <BracketView state={state} onBack={backToRoles} compId={compId} onViewHeat={viewLiveHeat} />}
+      {role === "admin" && (
+        <ErrorBoundary key="admin" onBack={backToRoles}>
+          <AdminGate state={state} update={update} onBack={backToRoles} compId={compId} />
+        </ErrorBoundary>
+      )}
+      {role === "spotter" && (
+        <ErrorBoundary key="spotter" onBack={backToRoles}>
+          <SpotterView state={state} update={update} onBack={backToRoles} compId={compId} />
+        </ErrorBoundary>
+      )}
+      {role === "judge" && (
+        <ErrorBoundary key="judge" onBack={backToRoles}>
+          <JudgeView state={state} update={update} onBack={backToRoles} compId={compId} />
+        </ErrorBoundary>
+      )}
+      {role === "leaderboard" && (
+        <ErrorBoundary key="leaderboard" onBack={backToRoles}>
+          <LeaderboardView state={state} onBack={backToRoles} compId={compId} focusHeatId={focusHeatId} />
+        </ErrorBoundary>
+      )}
+      {role === "bracket" && (
+        <ErrorBoundary key="bracket" onBack={backToRoles}>
+          <BracketView state={state} onBack={backToRoles} compId={compId} onViewHeat={viewLiveHeat} />
+        </ErrorBoundary>
+      )}
     </div>
+  );
+}
+
+export default function KiteCompApp() {
+  return (
+    <ErrorBoundary>
+      <KiteCompAppInner />
+    </ErrorBoundary>
   );
 }
