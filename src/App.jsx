@@ -1258,13 +1258,41 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
 
   const setHeatStatus = (id, status) => update((s) => ({ ...s, heats: s.heats.map((h) => (h.id === id ? { ...h, status } : h)) }));
   const finalizeHeat = async (heat) => {
-    const data = await loadHeat(heat.id);
+    const { data } = await loadHeat(compId, heat.id);
     const rids = heatRiderIds(state, heat);
     const ranking = rids
       .map((rid) => ({ rid, ...riderTotal(data, rid) }))
       .sort((a, b) => b.total - a.total)
       .map((r) => r.rid);
     update((s) => ({ ...s, heats: s.heats.map((h) => (h.id === heat.id ? { ...h, status: "complete", finalRanking: ranking } : h)) }));
+  };
+
+  const [repairBusy, setRepairBusy] = useState(false);
+  const [repairResult, setRepairResult] = useState(null);
+  const recomputeAllFinalRankings = async () => {
+    setRepairBusy(true);
+    setRepairResult(null);
+    // Recompute in bracket order so an earlier round's corrected ranking feeds
+    // correctly into a later round's rider resolution before that one recomputes.
+    const orderedCompleted = orderedHeats(state).filter((h) => state.heats.find((x) => x.id === h.id)?.status === "complete");
+    let changed = 0;
+    let workingState = state;
+    for (const heat of orderedCompleted) {
+      const liveHeat = workingState.heats.find((h) => h.id === heat.id);
+      const { data } = await loadHeat(compId, heat.id);
+      const rids = heatRiderIds(workingState, liveHeat);
+      const newRanking = rids
+        .map((rid) => ({ rid, ...riderTotal(data, rid) }))
+        .sort((a, b) => b.total - a.total)
+        .map((r) => r.rid);
+      const oldRanking = liveHeat.finalRanking || [];
+      const isDifferent = JSON.stringify(oldRanking) !== JSON.stringify(newRanking);
+      if (isDifferent) changed += 1;
+      workingState = { ...workingState, heats: workingState.heats.map((h) => (h.id === heat.id ? { ...h, finalRanking: newRanking } : h)) };
+    }
+    update(() => workingState);
+    setRepairBusy(false);
+    setRepairResult(`Checked ${orderedCompleted.length} finalized heat(s), corrected ${changed}.`);
   };
   const setOverride = (heatId, slotId, riderId) =>
     update((s) => ({
@@ -1767,6 +1795,20 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
 
       {tab === "backup" && (
         <div>
+          <Card style={{ marginBottom: 16, borderColor: "var(--border-danger, #E24B4A)" }}>
+            <SectionLabel>Fix finalized heat rankings</SectionLabel>
+            <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0 }}>
+              A bug meant "Finalize heat" could record the wrong winners for any heat finalized before this fix —
+              it fell back to slot order instead of actual scores. This recomputes every already-finalized heat's
+              result from its real trick scores, in bracket order, and re-saves it. Safe to run any time; it won't
+              touch heats that are still pending or in progress.
+            </p>
+            <button style={btn(true)} onClick={recomputeAllFinalRankings} disabled={repairBusy}>
+              {repairBusy ? "Recomputing…" : "Recompute all finalized heats"}
+            </button>
+            {repairResult && <p style={{ fontSize: 13, color: "var(--text-success, #3B6D11)", marginTop: 8, marginBottom: 0 }}>{repairResult}</p>}
+          </Card>
+
           <Card style={{ marginBottom: 16 }}>
             <SectionLabel>Admin password</SectionLabel>
             <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0 }}>
