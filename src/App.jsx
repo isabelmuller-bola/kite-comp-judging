@@ -3,8 +3,8 @@ import * as XLSX from "xlsx";
 import { supabase } from "./supabaseClient.js";
 
 const DEFAULT_TRICKS = [
-  "Jump", "One Footer", "BoardOff", "BackRoll", "FrontRoll",
-  "Kiteloop", "S-Loop", "Double", "x2", "Left", "Right", "Crash",
+  "Crash", "Jump", "One Footer", "BackRoll", "FrontRoll","x2", "x3", "Grab", "BoardOff", "Spin", "Flip", 
+  "Kiteloop", "S-Loop", "Inverted", "Deadman", "Boogie", 
 ];
 
 const ROUND_TONES = ["accent", "success", "warning", "danger", "gray"];
@@ -920,7 +920,7 @@ function HeatEntriesPanel({ state, heat, compId }) {
   const [data, updateHeat] = useHeatData(compId, heat.id, 6000);
   const [editingCell, setEditingCell] = useState(null);
   const riderIds = heatRiderIds(state, heat);
-  const approvedJudges = state.judges.filter((j) => j.status === "approved");
+  const approvedJudges = state.judges; // admin can pre-enter scores for any registered judge, even before they've arrived and logged in
 
   const setTrickScore = (entryId, judgeId, value) =>
     updateHeat((d) => ({ ...d, log: (d.log || []).map((e) => (e.id === entryId ? { ...e, scores: { ...e.scores, [judgeId]: value } } : e)) }));
@@ -1311,6 +1311,12 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
 
   const removeJudge = (id) => update((s) => ({ ...s, judges: s.judges.filter((j) => j.id !== id) }));
   const generateJudgePin = (id) => update((s) => ({ ...s, judges: s.judges.map((j) => (j.id === id ? { ...j, pendingPin: genPin() } : j)) }));
+  const [newJudgeName, setNewJudgeName] = useState("");
+  const addJudgeManually = () => {
+    if (!newJudgeName.trim()) return;
+    update((s) => ({ ...s, judges: [...s.judges, { id: uid(), name: newJudgeName.trim(), status: "approved", pendingPin: null }] }));
+    setNewJudgeName("");
+  };
   const clearJudgePin = (id) => update((s) => ({ ...s, judges: s.judges.map((j) => (j.id === id ? { ...j, pendingPin: null } : j)) }));
   const removeSpotter = (id) => update((s) => ({ ...s, spotters: (s.spotters || []).filter((sp) => sp.id !== id) }));
   const generateSpotterPin = (id) => update((s) => ({ ...s, spotters: (s.spotters || []).map((sp) => (sp.id === id ? { ...sp, pendingPin: genPin() } : sp)) }));
@@ -1733,6 +1739,17 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
             that's what lets them in. Their phone then stays logged in on its own even if the browser closes by
             accident, so you only need to do this once per judge per device.
           </p>
+          <Card style={{ marginBottom: 16 }}>
+            <SectionLabel>Add a judge</SectionLabel>
+            <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0 }}>
+              Add them here ahead of time so their name is ready to pick from on their phone when they arrive — and
+              so you can enter scores on their behalf if they're running late.
+            </p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input placeholder="Judge name" value={newJudgeName} onChange={(e) => setNewJudgeName(e.target.value)} onKeyDown={onEnter(addJudgeManually)} style={{ flex: 1 }} />
+              <button style={btn(false)} onClick={addJudgeManually}>Add</button>
+            </div>
+          </Card>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {state.judges.length === 0 && <p style={{ color: "var(--text-muted, #888780)" }}>No judges have registered yet.</p>}
             {state.judges.map((j) => (
