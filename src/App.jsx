@@ -2084,8 +2084,8 @@ function SpotterConsole({ state, onBack, compId, onSwitchSpotter }) {
 
       <SectionLabel>3. Trick</SectionLabel>
 
-      {SpeechRecognitionCtor && (
-        <div style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        {SpeechRecognitionCtor && (
           <button
             style={{ ...btn(listening), opacity: canPickTrick ? 1 : 0.5 }}
             disabled={!canPickTrick}
@@ -2093,8 +2093,21 @@ function SpotterConsole({ state, onBack, compId, onSwitchSpotter }) {
           >
             {listening ? "● Listening… tap to stop" : "🎙 Speak trick"}
           </button>
-        </div>
-      )}
+        )}
+        <button
+          disabled={!canPickTrick}
+          onClick={() => toggleCell(-1, 0, "Crash")}
+          style={{
+            ...btn(activeCells.has("-1:0")),
+            opacity: canPickTrick ? 1 : 0.5,
+            borderColor: "var(--border-danger, #E24B4A)",
+            color: "var(--text-danger, #A32D2D)",
+            background: activeCells.has("-1:0") ? "var(--bg-danger, #FCEBEB)" : undefined,
+          }}
+        >
+          Crash
+        </button>
+      </div>
 
       {voiceCandidate && (
         <Card style={{ marginBottom: 14, borderColor: "var(--border-accent, #378ADD)" }}>
@@ -3194,14 +3207,15 @@ function KiteCompAppInner() {
   const [state, update, ready] = useSharedState(compId);
   const [storageOk, setStorageOk] = useState(true);
 
-  const updateUrlParams = (params) => {
+  const updateUrlParams = (params, { push = true } = {}) => {
     try {
       const url = new URL(window.location.href);
       Object.entries(params).forEach(([key, value]) => {
         if (value === null || value === undefined) url.searchParams.delete(key);
         else url.searchParams.set(key, value);
       });
-      window.history.replaceState({}, "", url);
+      if (push) window.history.pushState({}, "", url);
+      else window.history.replaceState({}, "", url);
     } catch {}
   };
   const setRole = (next) => {
@@ -3214,6 +3228,19 @@ function KiteCompAppInner() {
   };
 
   useEffect(() => {
+    const onPopState = () => {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        setCompId(params.get("comp") || null);
+        setRoleState(params.get("role") || null);
+        setFocusHeatIdState(params.get("heat") || null);
+      } catch {}
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
     const handler = (e) => setStorageOk(e.detail.ok);
     window.addEventListener("kite-comp-storage-status", handler);
     return () => window.removeEventListener("kite-comp-storage-status", handler);
@@ -3221,23 +3248,10 @@ function KiteCompAppInner() {
 
   const openComp = (id) => {
     setCompId(id);
-    try {
-      const url = new URL(window.location.href);
-      url.searchParams.set("comp", id);
-      window.history.replaceState({}, "", url);
-    } catch {}
+    updateUrlParams({ comp: id });
   };
   const switchComp = () => {
-    setCompId(null);
-    setRoleState(null);
-    setFocusHeatIdState(null);
-    try {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("comp");
-      url.searchParams.delete("role");
-      url.searchParams.delete("heat");
-      window.history.replaceState({}, "", url);
-    } catch {}
+    window.history.back();
   };
 
   const storageBanner = !storageOk && (
@@ -3268,10 +3282,11 @@ function KiteCompAppInner() {
     );
   }
 
-  const backToRoles = () => { setRole(null); setFocusHeatId(null); };
+  const backToRoles = () => window.history.back();
   const viewLiveHeat = (heatId) => {
-    setFocusHeatId(heatId);
-    setRole("leaderboard");
+    setFocusHeatIdState(heatId);
+    setRoleState("leaderboard");
+    updateUrlParams({ heat: heatId, role: "leaderboard" });
   };
 
   return (
