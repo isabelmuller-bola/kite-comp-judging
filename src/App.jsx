@@ -3,8 +3,8 @@ import * as XLSX from "xlsx";
 import { supabase } from "./supabaseClient.js";
 
 const DEFAULT_TRICKS = [
-  "Crash", "Jump", "One Footer", "BackRoll", "FrontRoll","x2", "x3", "Grab", "BoardOff", "Spin", "Flip", 
-  "Kiteloop", "S-Loop", "Inverted", "Deadman", "Boogie", 
+  "Jump", "One Footer", "BoardOff", "BackRoll", "FrontRoll",
+  "Kiteloop", "S-Loop", "Double", "x2", "Left", "Right", "Crash",
 ];
 
 const ROUND_TONES = ["accent", "success", "warning", "danger", "gray"];
@@ -153,6 +153,16 @@ function riderTrickBreakdown(heatData, riderId) {
     else neutral.push(e.trick);
   });
   return { left, right, neutral };
+}
+function countUniqueTrickSets(heatData, riderId) {
+  const entries = (heatData.log || []).filter((e) => e.riderId === riderId && e.trick && !isCrash(e.trick));
+  const seen = new Set();
+  entries.forEach((e) => {
+    // Word-set comparison so "BackRoll x2" and "x2 BackRoll" count as the same trick.
+    const key = e.trick.toLowerCase().split(/\s+/).filter(Boolean).sort().join(" ");
+    seen.add(key);
+  });
+  return seen.size;
 }
 function round1(n) {
   return Math.round(n * 10) / 10;
@@ -2446,10 +2456,14 @@ function JudgeScoring({ state, judge, onBack, compId, onSwitchJudge }) {
             <>
               {riderIds.map((rid) => {
                 const { left, right, neutral } = riderTrickBreakdown(data, rid);
+                const uniqueCount = countUniqueTrickSets(data, rid);
                 return (
                   <div key={rid} style={{ marginBottom: 14, paddingBottom: 12, borderBottom: "0.5px solid var(--border, #D9D7CE)" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                      <RiderChip name={riderName(state, rid)} color={heat && riderColorHex(state, heat, rid)} />
+                      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <RiderChip name={riderName(state, rid)} color={heat && riderColorHex(state, heat, rid)} />
+                        <span style={{ fontSize: 12, color: "var(--text-muted, #888780)" }}>{uniqueCount} unique{uniqueCount === 1 ? "" : "s"}</span>
+                      </span>
                       <input
                         id={`variety-input-${rid}`}
                         type="number"
@@ -3090,10 +3104,41 @@ function KiteCompAppInner() {
       return false;
     }
   });
-  const [role, setRole] = useState(null);
-  const [focusHeatId, setFocusHeatId] = useState(null);
+  const [role, setRoleState] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("role") || null;
+    } catch {
+      return null;
+    }
+  });
+  const [focusHeatId, setFocusHeatIdState] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("heat") || null;
+    } catch {
+      return null;
+    }
+  });
   const [state, update, ready] = useSharedState(compId);
   const [storageOk, setStorageOk] = useState(true);
+
+  const updateUrlParams = (params) => {
+    try {
+      const url = new URL(window.location.href);
+      Object.entries(params).forEach(([key, value]) => {
+        if (value === null || value === undefined) url.searchParams.delete(key);
+        else url.searchParams.set(key, value);
+      });
+      window.history.replaceState({}, "", url);
+    } catch {}
+  };
+  const setRole = (next) => {
+    setRoleState(next);
+    updateUrlParams({ role: next });
+  };
+  const setFocusHeatId = (next) => {
+    setFocusHeatIdState(next);
+    updateUrlParams({ heat: next });
+  };
 
   useEffect(() => {
     const handler = (e) => setStorageOk(e.detail.ok);
@@ -3111,10 +3156,13 @@ function KiteCompAppInner() {
   };
   const switchComp = () => {
     setCompId(null);
-    setRole(null);
+    setRoleState(null);
+    setFocusHeatIdState(null);
     try {
       const url = new URL(window.location.href);
       url.searchParams.delete("comp");
+      url.searchParams.delete("role");
+      url.searchParams.delete("heat");
       window.history.replaceState({}, "", url);
     } catch {}
   };
