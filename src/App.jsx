@@ -1182,10 +1182,14 @@ function ShareLinkCard({ compId }) {
     const url1 = new URL(window.location.href);
     url1.searchParams.set("comp", compId);
     url1.searchParams.delete("public");
+    url1.searchParams.delete("role");
+    url1.searchParams.delete("heat");
     internalLink = url1.toString();
     const url2 = new URL(window.location.href);
     url2.searchParams.set("comp", compId);
     url2.searchParams.set("public", "1");
+    url2.searchParams.delete("role");
+    url2.searchParams.delete("heat");
     publicLink = url2.toString();
   } catch {}
 
