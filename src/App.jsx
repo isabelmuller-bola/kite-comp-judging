@@ -2,9 +2,11 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { supabase } from "./supabaseClient.js";
 
-const DEFAULT_TRICKS = [
-  "Jump", "One Footer", "BoardOff", "BackRoll", "FrontRoll",
-  "Kiteloop", "S-Loop", "Double", "x2", "Left", "Right", "Crash",
+const DEFAULT_TRICK_COLUMNS = [
+  ["x2", "x3", "Simple Jump", "Backroll", "Frontroll", "Inverted"],
+  ["Grab", "One-Footer", "Board Off Fin", "Board Off Handle", "Board Off Kick"],
+  ["x2", "x3", "Spin", "Tic Tac", "Flip"],
+  ["Sent Jump", "Kiteloop", "Contra Loop", "Boogie", "Late Back", "Dangle"],
 ];
 
 const ROUND_TONES = ["accent", "success", "warning", "danger", "gray"];
@@ -17,7 +19,7 @@ const emptyState = () => ({
   riders: [],
   judges: [],
   spotters: [],
-  tricks: [...DEFAULT_TRICKS],
+  trickColumns: DEFAULT_TRICK_COLUMNS.map((col) => [...col]),
   trikotColors: [],
   adminPassword: "Soulgames",
 });
@@ -154,15 +156,18 @@ function riderTrickBreakdown(heatData, riderId) {
   });
   return { left, right, neutral };
 }
-function countUniqueTrickSets(heatData, riderId) {
+function countUniqueTrickSetsBySide(heatData, riderId) {
   const entries = (heatData.log || []).filter((e) => e.riderId === riderId && e.trick && !isCrash(e.trick));
-  const seen = new Set();
+  const leftSeen = new Set();
+  const rightSeen = new Set();
   entries.forEach((e) => {
+    const lower = e.trick.toLowerCase();
     // Word-set comparison so "BackRoll x2" and "x2 BackRoll" count as the same trick.
-    const key = e.trick.toLowerCase().split(/\s+/).filter(Boolean).sort().join(" ");
-    seen.add(key);
+    const key = lower.split(/\s+/).filter(Boolean).sort().join(" ");
+    if (lower.includes("left")) leftSeen.add(key);
+    else if (lower.includes("right")) rightSeen.add(key);
   });
-  return seen.size;
+  return { left: leftSeen.size, right: rightSeen.size };
 }
 function round1(n) {
   return Math.round(n * 10) / 10;
@@ -1219,7 +1224,7 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
   const [tab, setTab] = useState(state.planningDone ? "riders" : "plan");
   const [newRider, setNewRider] = useState("");
   const [newRank, setNewRank] = useState("");
-  const [newTrick, setNewTrick] = useState("");
+  const [newTrick, setNewTrick] = useState({});
   const [uploadPreview, setUploadPreview] = useState(null);
   const [uploadError, setUploadError] = useState("");
 
@@ -1333,10 +1338,14 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
   const clearSpotterPin = (id) => update((s) => ({ ...s, spotters: (s.spotters || []).map((sp) => (sp.id === id ? { ...sp, pendingPin: null } : sp)) }));
   const [actingAsSpotter, setActingAsSpotter] = useState(false);
 
-  const addTrick = () => {
-    if (!newTrick.trim()) return;
-    update((s) => ({ ...s, tricks: [...s.tricks, newTrick.trim()] }));
-    setNewTrick("");
+  const addTrick = (colIndex) => {
+    if (!newTrick[colIndex] || !newTrick[colIndex].trim()) return;
+    update((s) => {
+      const cols = s.trickColumns.map((c) => [...c]);
+      cols[colIndex].push(newTrick[colIndex].trim());
+      return { ...s, trickColumns: cols };
+    });
+    setNewTrick((prev) => ({ ...prev, [colIndex]: "" }));
   };
   const [expandedHeats, setExpandedHeats] = useState({});
   const toggleExpanded = (id) => setExpandedHeats((e) => ({ ...e, [id]: !e[id] }));
@@ -1405,22 +1414,27 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
     reader.readAsText(file);
   };
 
-  const removeTrick = (name) => update((s) => ({ ...s, tricks: s.tricks.filter((t) => t !== name) }));
-  const renameTrick = (index, newName) => {
+  const removeTrick = (colIndex, name) =>
+    update((s) => {
+      const cols = s.trickColumns.map((c) => [...c]);
+      cols[colIndex] = cols[colIndex].filter((t) => t !== name);
+      return { ...s, trickColumns: cols };
+    });
+  const renameTrick = (colIndex, index, newName) => {
     if (!newName.trim()) return;
     update((s) => {
-      const tricks = [...s.tricks];
-      tricks[index] = newName.trim();
-      return { ...s, tricks };
+      const cols = s.trickColumns.map((c) => [...c]);
+      cols[colIndex][index] = newName.trim();
+      return { ...s, trickColumns: cols };
     });
   };
-  const reorderTricks = (fromIndex, toIndex) => {
+  const reorderTricks = (colIndex, fromIndex, toIndex) => {
     if (fromIndex === toIndex) return;
     update((s) => {
-      const tricks = [...s.tricks];
-      const [moved] = tricks.splice(fromIndex, 1);
-      tricks.splice(toIndex, 0, moved);
-      return { ...s, tricks };
+      const cols = s.trickColumns.map((c) => [...c]);
+      const [moved] = cols[colIndex].splice(fromIndex, 1);
+      cols[colIndex].splice(toIndex, 0, moved);
+      return { ...s, trickColumns: cols };
     });
   };
   const [editingTrickIndex, setEditingTrickIndex] = useState(null);
@@ -1677,68 +1691,85 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
 
       {tab === "tricks" && (
         <div>
-          <Card style={{ marginBottom: 16 }}>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input placeholder="New trick name" value={newTrick} onChange={(e) => setNewTrick(e.target.value)} onKeyDown={onEnter(addTrick)} style={{ flex: 1 }} />
-              <button style={btn(false)} onClick={addTrick}>
-                Add
-              </button>
-            </div>
-          </Card>
-          <p style={{ fontSize: 12, color: "var(--text-muted, #888780)", marginTop: 0, marginBottom: 10 }}>Drag to reorder. Click a name to rename it.</p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {state.tricks.map((t, i) => (
-              <span
-                key={i}
-                draggable
-                onDragStart={() => setDragTrickIndex(i)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (dragTrickIndex !== null) reorderTricks(dragTrickIndex, i);
-                  setDragTrickIndex(null);
-                }}
-                onDragEnd={() => setDragTrickIndex(null)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "5px 6px 5px 12px",
-                  border: "0.5px solid var(--border, #D9D7CE)",
-                  borderRadius: 999,
-                  fontSize: 13,
-                  background: dragTrickIndex === i ? "var(--surface-1, #F1EFE8)" : "transparent",
-                  cursor: "grab",
-                }}
-              >
-                <span style={{ color: "var(--text-muted, #888780)", fontSize: 12 }}>⠿</span>
-                {editingTrickIndex === i ? (
-                  <input
-                    id={`trick-rename-${i}`}
-                    defaultValue={t}
-                    autoFocus
-                    style={{ fontSize: 13, width: 120 }}
-                    onKeyDown={onEnter(() => {
-                      const el = document.getElementById(`trick-rename-${i}`);
-                      if (el) renameTrick(i, el.value);
-                      setEditingTrickIndex(null);
-                    })}
-                    onBlur={(e) => {
-                      renameTrick(i, e.target.value);
-                      setEditingTrickIndex(null);
-                    }}
-                  />
-                ) : (
-                  <button onClick={() => setEditingTrickIndex(i)} style={{ border: "none", background: "none", padding: 0, fontSize: 13, cursor: "pointer" }}>
-                    {t}
-                  </button>
-                )}
-                <button onClick={() => removeTrick(t)} aria-label={`Remove ${t}`} style={{ padding: "0 2px", border: "none", background: "none", fontSize: 14, color: "var(--text-danger, #A32D2D)", cursor: "pointer" }}>
-                  ×
-                </button>
-              </span>
-            ))}
-          </div>
+          <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 0, marginBottom: 14 }}>
+            These four columns are what the spotter taps through. Drag within a column to reorder, click a name to
+            rename it. Editing here changes what the spotter sees immediately.
+          </p>
+          {state.trickColumns.map((col, colIndex) => (
+            <Card key={colIndex} style={{ marginBottom: 16 }}>
+              <SectionLabel>Column {colIndex + 1}</SectionLabel>
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                <input
+                  placeholder="Add to this column"
+                  value={newTrick[colIndex] || ""}
+                  onChange={(e) => setNewTrick((prev) => ({ ...prev, [colIndex]: e.target.value }))}
+                  onKeyDown={onEnter(() => addTrick(colIndex))}
+                  style={{ flex: 1 }}
+                />
+                <button style={btn(false)} onClick={() => addTrick(colIndex)}>Add</button>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {col.map((t, i) => {
+                  const cellKey = `${colIndex}:${i}`;
+                  return (
+                    <span
+                      key={i}
+                      draggable
+                      onDragStart={() => setDragTrickIndex(cellKey)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (dragTrickIndex !== null) {
+                          const [fromCol, fromIdx] = dragTrickIndex.split(":").map(Number);
+                          if (fromCol === colIndex) reorderTricks(colIndex, fromIdx, i);
+                        }
+                        setDragTrickIndex(null);
+                      }}
+                      onDragEnd={() => setDragTrickIndex(null)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "5px 6px 5px 12px",
+                        border: "0.5px solid var(--border, #D9D7CE)",
+                        borderRadius: 999,
+                        fontSize: 13,
+                        background: dragTrickIndex === cellKey ? "var(--surface-1, #F1EFE8)" : "transparent",
+                        cursor: "grab",
+                      }}
+                    >
+                      <span style={{ color: "var(--text-muted, #888780)", fontSize: 12 }}>⠿</span>
+                      {editingTrickIndex === cellKey ? (
+                        <input
+                          id={`trick-rename-${cellKey}`}
+                          defaultValue={t}
+                          autoFocus
+                          style={{ fontSize: 13, width: 120 }}
+                          onKeyDown={onEnter(() => {
+                            const el = document.getElementById(`trick-rename-${cellKey}`);
+                            if (el) renameTrick(colIndex, i, el.value);
+                            setEditingTrickIndex(null);
+                          })}
+                          onBlur={(e) => {
+                            renameTrick(colIndex, i, e.target.value);
+                            setEditingTrickIndex(null);
+                          }}
+                        />
+                      ) : (
+                        <button onClick={() => setEditingTrickIndex(cellKey)} style={{ border: "none", background: "none", padding: 0, fontSize: 13, cursor: "pointer" }}>
+                          {t}
+                        </button>
+                      )}
+                      <button onClick={() => removeTrick(colIndex, t)} aria-label={`Remove ${t}`} style={{ padding: "0 2px", border: "none", background: "none", fontSize: 14, color: "var(--text-danger, #A32D2D)", cursor: "pointer" }}>
+                        ×
+                      </button>
+                    </span>
+                  );
+                })}
+                {col.length === 0 && <p style={{ fontSize: 12, color: "var(--text-muted, #888780)", margin: 0 }}>Empty column.</p>}
+              </div>
+            </Card>
+          ))}
         </div>
       )}
 
@@ -1904,8 +1935,8 @@ function SpotterConsole({ state, onBack, compId, onSwitchSpotter }) {
   const [heatId, setHeatId] = useState(liveHeats[0]?.id || "");
   const [selectedRider, setSelectedRider] = useState(null);
   const [selectedSide, setSelectedSide] = useState(null);
-  const [comboTags, setComboTags] = useState([]);
-  const [customTrick, setCustomTrick] = useState("");
+  const [activeCells, setActiveCells] = useState(new Set());
+  const [trickText, setTrickText] = useState("");
   const [sentFlash, setSentFlash] = useState(null);
   const [data, updateHeat] = useHeatData(compId, heatId);
   const [listening, setListening] = useState(false);
@@ -1925,9 +1956,11 @@ function SpotterConsole({ state, onBack, compId, onSwitchSpotter }) {
     attemptCounts[e.riderId] = (attemptCounts[e.riderId] || 0) + 1;
   });
 
-  const sendTrick = (trickPart) => {
-    if (!selectedRider || !selectedSide || !trickPart) return;
-    const fullTrick = `${selectedSide} ${trickPart}`.trim();
+  const canPickTrick = selectedRider && selectedSide;
+
+  const sendTrick = () => {
+    if (!selectedRider || !selectedSide || !trickText.trim()) return;
+    const fullTrick = `${selectedSide} ${trickText.trim()}`.trim();
     updateHeat((d) => ({
       ...d,
       log: [...(d.log || []), { id: uid(), riderId: selectedRider, trick: fullTrick, ts: Date.now(), scores: {} }],
@@ -1935,28 +1968,40 @@ function SpotterConsole({ state, onBack, compId, onSwitchSpotter }) {
     setSentFlash(`${riderName(state, selectedRider)} — ${fullTrick}`);
     setSelectedRider(null);
     setSelectedSide(null);
-    setComboTags([]);
-    setCustomTrick("");
+    setActiveCells(new Set());
+    setTrickText("");
     setVoiceCandidate("");
     setTimeout(() => setSentFlash(null), 2000);
   };
 
-  const toggleTag = (tag) => setComboTags((tags) => (tags.includes(tag) ? tags.filter((t) => t !== tag) : [...tags, tag]));
-  const comboName = state.tricks.filter((t) => comboTags.includes(t)).join(" ");
-  const canPickTrick = selectedRider && selectedSide;
+  const toggleCell = (colIndex, itemIndex, label) => {
+    const key = `${colIndex}:${itemIndex}`;
+    const isActive = activeCells.has(key);
+    const nextActive = new Set(activeCells);
+    if (isActive) {
+      nextActive.delete(key);
+      const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const re = new RegExp(`\\b${escaped}\\b`, "i");
+      setTrickText((text) => text.replace(re, "").replace(/\s+/g, " ").trim());
+    } else {
+      nextActive.add(key);
+      setTrickText((text) => (text ? `${text} ${label}` : label));
+    }
+    setActiveCells(nextActive);
+  };
 
   useEffect(() => {
     const handler = (e) => {
       if (e.key !== "Enter") return;
       const tag = document.activeElement?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return; // let those fields handle their own Enter
-      if (canPickTrick && comboTags.length > 0) {
-        sendTrick(comboName);
+      if (canPickTrick && trickText.trim()) {
+        sendTrick();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [canPickTrick, comboTags, comboName, sendTrick]);
+  }, [canPickTrick, trickText, sendTrick]);
 
   const startListening = () => {
     if (!SpeechRecognitionCtor || !canPickTrick || listening) return;
@@ -2056,15 +2101,30 @@ function SpotterConsole({ state, onBack, compId, onSwitchSpotter }) {
           <p style={{ margin: "0 0 8px 0", fontSize: 13, color: "var(--text-secondary, #5F5E5A)" }}>Heard:</p>
           <p style={{ margin: "0 0 10px 0", fontWeight: 500 }}>"{voiceCandidate}"</p>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-            <button style={btn(true)} onClick={() => sendTrick(voiceCandidate)}>Send as heard</button>
+            <button
+              style={btn(true)}
+              onClick={() => {
+                setTrickText((text) => (text ? `${text} ${voiceCandidate}` : voiceCandidate));
+                setVoiceCandidate("");
+              }}
+            >
+              Add to trick
+            </button>
             <button style={btn(false)} onClick={() => setVoiceCandidate("")}>Discard</button>
           </div>
-          {closestTricks(voiceCandidate, state.tricks).length > 0 && (
+          {closestTricks(voiceCandidate, state.trickColumns.flat()).length > 0 && (
             <div>
               <p style={{ fontSize: 12, color: "var(--text-muted, #888780)", margin: "0 0 6px 0" }}>Did you mean:</p>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {closestTricks(voiceCandidate, state.tricks).map((t) => (
-                  <button key={t} style={btn(false)} onClick={() => sendTrick(t)}>
+                {closestTricks(voiceCandidate, state.trickColumns.flat()).map((t) => (
+                  <button
+                    key={t}
+                    style={btn(false)}
+                    onClick={() => {
+                      setTrickText((text) => (text ? `${text} ${t}` : t));
+                      setVoiceCandidate("");
+                    }}
+                  >
                     {t}
                   </button>
                 ))}
@@ -2074,33 +2134,44 @@ function SpotterConsole({ state, onBack, compId, onSwitchSpotter }) {
         </Card>
       )}
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12, opacity: canPickTrick ? 1 : 0.5 }}>
-        {state.tricks.map((t) => (
-          <button key={t} disabled={!canPickTrick} onClick={() => toggleTag(t)} style={btn(comboTags.includes(t))}>
-            {t}
-          </button>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 14, opacity: canPickTrick ? 1 : 0.5 }}>
+        {state.trickColumns.map((col, colIndex) => (
+          <div key={colIndex} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {col.map((label, itemIndex) => {
+              const cellKey = `${colIndex}:${itemIndex}`;
+              return (
+                <button
+                  key={cellKey}
+                  disabled={!canPickTrick}
+                  onClick={() => toggleCell(colIndex, itemIndex, label)}
+                  style={{ ...btn(activeCells.has(cellKey)), fontSize: 12, padding: "8px 4px", lineHeight: 1.25, whiteSpace: "normal", wordBreak: "break-word" }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
         ))}
       </div>
-      {comboTags.length > 0 && (
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
-          <span style={{ fontWeight: 500 }}>{selectedSide} {comboName}</span>
-          <button style={btn(true)} onClick={() => sendTrick(comboName)}>Send</button>
-          <button style={btn(false)} onClick={() => setComboTags([])}>Clear</button>
-        </div>
-      )}
+
       <div style={{ display: "flex", gap: 8 }}>
         <input
-          placeholder="Custom trick"
-          value={customTrick}
-          onChange={(e) => setCustomTrick(e.target.value)}
-          onKeyDown={onEnter(() => customTrick.trim() && sendTrick(customTrick.trim()))}
+          placeholder="Trick (tap above, or type/edit here)"
+          value={trickText}
+          onChange={(e) => setTrickText(e.target.value)}
+          onKeyDown={onEnter(sendTrick)}
           disabled={!canPickTrick}
           style={{ flex: 1 }}
         />
-        <button style={btn(false)} disabled={!canPickTrick || !customTrick.trim()} onClick={() => sendTrick(customTrick.trim())}>
+        <button style={btn(true)} disabled={!canPickTrick || !trickText.trim()} onClick={sendTrick}>
           Send
         </button>
       </div>
+      {trickText.trim() && (
+        <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: 8, marginBottom: 0 }}>
+          Will send: <strong>{selectedSide} {trickText.trim()}</strong>
+        </p>
+      )}
 
       <div style={{ marginTop: 24 }}>
         <SectionLabel>Recent log</SectionLabel>
@@ -2456,13 +2527,15 @@ function JudgeScoring({ state, judge, onBack, compId, onSwitchJudge }) {
             <>
               {riderIds.map((rid) => {
                 const { left, right, neutral } = riderTrickBreakdown(data, rid);
-                const uniqueCount = countUniqueTrickSets(data, rid);
+                const uniques = countUniqueTrickSetsBySide(data, rid);
                 return (
                   <div key={rid} style={{ marginBottom: 14, paddingBottom: 12, borderBottom: "0.5px solid var(--border, #D9D7CE)" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                       <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <RiderChip name={riderName(state, rid)} color={heat && riderColorHex(state, heat, rid)} />
-                        <span style={{ fontSize: 12, color: "var(--text-muted, #888780)" }}>{uniqueCount} unique{uniqueCount === 1 ? "" : "s"}</span>
+                        <span style={{ fontSize: 12, color: "var(--text-muted, #888780)" }}>
+                          {uniques.left} unique{uniques.left === 1 ? "" : "s"} left, {uniques.right} unique{uniques.right === 1 ? "" : "s"} right
+                        </span>
                       </span>
                       <input
                         id={`variety-input-${rid}`}
