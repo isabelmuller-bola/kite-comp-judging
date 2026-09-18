@@ -110,6 +110,75 @@ async function saveHeat(compId, heatId, data) {
   }
 }
 
+const CAS_MAX_ATTEMPTS = 8;
+
+// Applies `mutations` on top of the *current server row*, atomically, retrying
+// automatically if another device wrote first in between. This is what keeps
+// two judges scoring around the same moment from ever silently clobbering
+// each other's score: the database (via the heat_data_cas function) only
+// accepts a write if nothing has changed since `base` was read, and if it
+// rejects the write, we reload the real latest state, replay every queued
+// change on top of it, and try again.
+async function casSaveHeat(compId, heatId, base, mutations) {
+  let attemptBase = base;
+  for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
+    let next = attemptBase;
+    mutations.forEach((fn) => {
+      next = fn(next);
+    });
+    const expectedRev = attemptBase._rev || 0;
+    next._rev = expectedRev + 1;
+    try {
+      const { data: committed, error } = await supabase.rpc("heat_data_cas", {
+        p_comp_id: compId,
+        p_heat_id: heatId,
+        p_expected_rev: expectedRev,
+        p_new_data: next,
+      });
+      if (error) throw error;
+      if (committed) return { ok: true, data: committed };
+      const { ok: reloadOk, data: fresh } = await loadHeat(compId, heatId);
+      if (!reloadOk) return { ok: false, data: attemptBase };
+      attemptBase = fresh;
+    } catch {
+      // The heat_data_cas function may not exist yet (schema not migrated) --
+      // fall back to a plain upsert so the app still works, just without the
+      // race protection, rather than failing every save outright.
+      const ok = await saveHeat(compId, heatId, next);
+      return { ok, data: next };
+    }
+  }
+  return { ok: false, data: attemptBase };
+}
+
+async function casSaveState(compId, base, mutations) {
+  let attemptBase = base;
+  for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
+    let next = attemptBase;
+    mutations.forEach((fn) => {
+      next = fn(next);
+    });
+    const expectedRev = attemptBase._rev || 0;
+    next._rev = expectedRev + 1;
+    try {
+      const { data: committed, error } = await supabase.rpc("comp_state_cas", {
+        p_comp_id: compId,
+        p_expected_rev: expectedRev,
+        p_new_state: next,
+      });
+      if (error) throw error;
+      if (committed) return { ok: true, data: committed };
+      const { ok: reloadOk, state: fresh } = await loadState(compId);
+      if (!reloadOk) return { ok: false, data: attemptBase };
+      attemptBase = fresh;
+    } catch {
+      const ok = await saveState(compId, next);
+      return { ok, data: next };
+    }
+  }
+  return { ok: false, data: attemptBase };
+}
+
 function trimmedAverage(numbers) {
   if (numbers.length === 0) return null;
   if (numbers.length >= 4) {
@@ -235,7 +304,7 @@ function useSharedState(compId, pollMs = 10000) {
   const [state, setState] = useState(emptyState());
   const [ready, setReady] = useState(false);
   const lastWriteRef = useRef(0);
-  const pendingRef = useRef(null);
+  const mutationQueueRef = useRef([]);
   const writingRef = useRef(false);
   const stateRef = useRef(state);
   const instanceIdRef = useRef(uid());
@@ -251,15 +320,35 @@ function useSharedState(compId, pollMs = 10000) {
     setReady(true);
   }, []);
 
+  // Atomic compare-and-swap against the server (see comp_state_cas in
+  // supabase-schema-cas.sql), not a plain write of the locally cached state:
+  // writing the *entire* state blob straight from local memory meant two
+  // near-simultaneous edits from different devices could race, with whichever
+  // write landed second silently overwriting the other's change. The database
+  // now rejects a write unless nothing changed since we last read, and on a
+  // rejection we reload the real latest state, replay every queued change on
+  // top of it, and retry automatically -- so nobody's change is ever silently
+  // dropped.
   const flush = useCallback(async () => {
-    if (writingRef.current || pendingRef.current === null) return;
+    if (writingRef.current) return;
+    if (mutationQueueRef.current.length === 0) return;
     writingRef.current = true;
-    const toWrite = pendingRef.current;
-    pendingRef.current = null;
-    const ok = await saveState(compId, toWrite);
-    reportStorageStatus(ok);
-    writingRef.current = false;
-    if (pendingRef.current !== null) flush();
+    const mutations = mutationQueueRef.current;
+    mutationQueueRef.current = [];
+    try {
+      const { ok: fetchOk, state: fresh } = await loadState(compId);
+      const base = fetchOk ? fresh : stateRef.current;
+      lastWriteRef.current = Date.now();
+      const { ok, data: committed } = await casSaveState(compId, base, mutations);
+      reportStorageStatus(ok);
+      if (ok) {
+        stateRef.current = committed;
+        setState(committed);
+      }
+    } finally {
+      writingRef.current = false;
+      if (mutationQueueRef.current.length > 0) flush();
+    }
   }, [compId]);
 
   useEffect(() => {
@@ -301,13 +390,9 @@ function useSharedState(compId, pollMs = 10000) {
     (fn) => {
       if (!compId) return;
       lastWriteRef.current = Date.now();
-      setState((prev) => {
-        const next = fn(prev);
-        next._rev = (prev._rev || 0) + 1;
-        pendingRef.current = next;
-        flush();
-        return next;
-      });
+      mutationQueueRef.current.push(fn);
+      setState((prev) => fn(prev)); // optimistic local UI update, replayed for real against fresh server state in flush()
+      flush();
     },
     [compId, flush]
   );
@@ -318,7 +403,7 @@ function useSharedState(compId, pollMs = 10000) {
 function useHeatData(compId, heatId, pollMs = 8000) {
   const [data, setData] = useState({ log: [], variety: {} });
   const lastWriteRef = useRef(0);
-  const pendingRef = useRef(null);
+  const mutationQueueRef = useRef([]);
   const writingRef = useRef(false);
   const dataRef = useRef(data);
   const instanceIdRef = useRef(uid());
@@ -333,15 +418,37 @@ function useHeatData(compId, heatId, pollMs = 8000) {
     setData(d);
   }, []);
 
+  // Atomic compare-and-swap against the server (see heat_data_cas in
+  // supabase-schema-cas.sql), not a plain write of the locally cached data.
+  // The old version wrote the *entire* log/variety blob straight from local
+  // memory on every score submission; when two judges scored around the same
+  // moment (very normal live), whichever write landed second was built from a
+  // copy that didn't yet include the other judge's score, and silently
+  // overwrote it -- the "score comes back empty" bug. The database now
+  // rejects a write unless nothing changed since we last read, and on a
+  // rejection we reload the real latest trick log, replay every queued change
+  // on top of it, and retry automatically -- so nobody's score is ever
+  // silently dropped, no matter how close together two judges tap "submit".
   const flush = useCallback(async () => {
-    if (writingRef.current || pendingRef.current === null) return;
+    if (writingRef.current) return;
+    if (mutationQueueRef.current.length === 0) return;
     writingRef.current = true;
-    const toWrite = pendingRef.current;
-    pendingRef.current = null;
-    const ok = await saveHeat(compId, heatId, toWrite);
-    reportStorageStatus(ok);
-    writingRef.current = false;
-    if (pendingRef.current !== null) flush();
+    const mutations = mutationQueueRef.current;
+    mutationQueueRef.current = [];
+    try {
+      const { ok: fetchOk, data: fresh } = await loadHeat(compId, heatId);
+      const base = fetchOk ? fresh : dataRef.current;
+      lastWriteRef.current = Date.now();
+      const { ok, data: committed } = await casSaveHeat(compId, heatId, base, mutations);
+      reportStorageStatus(ok);
+      if (ok) {
+        dataRef.current = committed;
+        setData(committed);
+      }
+    } finally {
+      writingRef.current = false;
+      if (mutationQueueRef.current.length > 0) flush();
+    }
   }, [compId, heatId]);
 
   useEffect(() => {
@@ -383,13 +490,9 @@ function useHeatData(compId, heatId, pollMs = 8000) {
     (fn) => {
       if (!heatId || !compId) return;
       lastWriteRef.current = Date.now();
-      setData((prev) => {
-        const next = fn(prev);
-        next._rev = (prev._rev || 0) + 1;
-        pendingRef.current = next;
-        flush();
-        return next;
-      });
+      mutationQueueRef.current.push(fn);
+      setData((prev) => fn(prev)); // optimistic local UI update, replayed for real against fresh server state in flush()
+      flush();
     },
     [compId, heatId, flush]
   );
@@ -1276,6 +1379,8 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
   const uploadWarnings = uploadPreview ? validateRoster(uploadPreview) : [];
 
   const setHeatStatus = (id, status) => update((s) => ({ ...s, heats: s.heats.map((h) => (h.id === id ? { ...h, status } : h)) }));
+  const toggleHiddenFromPublic = (id) =>
+    update((s) => ({ ...s, heats: s.heats.map((h) => (h.id === id ? { ...h, hiddenFromPublic: !h.hiddenFromPublic } : h)) }));
   const finalizeHeat = async (heat) => {
     const { data } = await loadHeat(compId, heat.id);
     const rids = heatRiderIds(state, heat);
@@ -1622,9 +1727,10 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
             return (
               <Card key={h.id}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontWeight: 500 }}>Heat {heatNumber(state, h.id)}</span>
                     {round && <Pill tone={ROUND_TONES[round.toneIndex]}>{round.name}</Pill>}
+                    {h.hiddenFromPublic && <Pill tone="danger">Hidden from public</Pill>}
                   </span>
                   <Pill tone={h.status === "active" ? "accent" : h.status === "complete" ? "success" : h.status === "awaiting-variety" ? "danger" : "gray"}>{h.status}</Pill>
                 </div>
@@ -1679,10 +1785,21 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
                     </button>
                   )}
                   {h.status === "complete" && <button style={btn(false)} onClick={() => setHeatStatus(h.id, "pending")}>Reopen</button>}
+                  <button
+                    style={{ ...btn(!!h.hiddenFromPublic), color: h.hiddenFromPublic ? "var(--text-danger, #A32D2D)" : undefined, borderColor: h.hiddenFromPublic ? "var(--border-danger, #E24B4A)" : undefined, background: h.hiddenFromPublic ? "var(--bg-danger, #FCEBEB)" : undefined }}
+                    onClick={() => toggleHiddenFromPublic(h.id)}
+                  >
+                    {h.hiddenFromPublic ? "Show to public again" : "Hide from public"}
+                  </button>
                   <button style={{ ...btn(false), marginLeft: "auto" }} onClick={() => toggleExpanded(h.id)}>
                     {expandedHeats[h.id] ? "Hide entries" : "Show entries"}
                   </button>
                 </div>
+                {h.hiddenFromPublic && (
+                  <p style={{ fontSize: 12, color: "var(--text-danger, #A32D2D)", marginTop: 8, marginBottom: 0 }}>
+                    This heat is scored normally but is hidden from the public link and the Bracket/Leaderboard views — use this to hold results back until a prize ceremony.
+                  </p>
+                )}
                 {!ready && h.status === "pending" && <p style={{ fontSize: 12, color: "var(--text-muted, #888780)", marginTop: 8, marginBottom: 0 }}>Waiting on riders to be resolved.</p>}
                 {h.status === "awaiting-variety" && <VarietyStatus state={state} heat={h} compId={compId} />}
                 {expandedHeats[h.id] && <HeatEntriesPanel state={state} heat={h} compId={compId} />}
@@ -2680,7 +2797,7 @@ function JudgeScoring({ state, judge, onBack, compId, onSwitchJudge }) {
 }
 
 function LeaderboardView({ state, onBack, compId, focusHeatId }) {
-  const heatsWithActivity = state.heats.filter((h) => h.status !== "pending");
+  const heatsWithActivity = state.heats.filter((h) => h.status !== "pending" && !h.hiddenFromPublic);
   const [heatId, setHeatId] = useState(focusHeatId || heatsWithActivity[0]?.id || "");
   const [expanded, setExpanded] = useState(null);
 
@@ -2695,6 +2812,9 @@ function LeaderboardView({ state, onBack, compId, focusHeatId }) {
   const [data] = useHeatData(compId, heatId);
   const heat = state.heats.find((h) => h.id === heatId);
   const riderIds = heat ? heatRiderIds(state, heat) : [];
+  const round = heat ? state.rounds.find((r) => r.id === heat.roundId) : null;
+  const maxAttemptsPerRider = round?.maxAttempts || null;
+  const totalTricksLogged = (data.log || []).length;
 
   if (heatsWithActivity.length === 0) {
     return (
@@ -2724,6 +2844,12 @@ function LeaderboardView({ state, onBack, compId, focusHeatId }) {
           </button>
         ))}
       </div>
+      {heat && (
+        <p style={{ fontSize: 13, color: "var(--text-secondary, #5F5E5A)", marginTop: -8, marginBottom: 16 }}>
+          <strong style={{ color: "var(--text-primary, #2C2C2A)" }}>{totalTricksLogged}</strong> trick{totalTricksLogged === 1 ? "" : "s"} logged so far in this heat
+          {maxAttemptsPerRider ? ` · ${maxAttemptsPerRider} attempts per rider` : ""}
+        </p>
+      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {rows.map((r, i) => {
           const topIds = topIdsFor(r.rid);
@@ -2746,6 +2872,9 @@ function LeaderboardView({ state, onBack, compId, focusHeatId }) {
                 <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <span style={{ color: "var(--text-muted, #888780)", width: 20, fontWeight: 500 }}>{i + 1}</span>
                   <RiderChip name={riderName(state, r.rid)} color={color} />
+                  <span style={{ fontSize: 12, color: "var(--text-muted, #888780)" }}>
+                    {r.trickCount} trick{r.trickCount === 1 ? "" : "s"}{maxAttemptsPerRider ? ` / ${maxAttemptsPerRider}` : ""}
+                  </span>
                 </span>
                 <span style={{ fontSize: 14, color: "var(--text-secondary, #5F5E5A)" }}>
                   {r.hasAnyScore ? (
@@ -2901,9 +3030,31 @@ function BracketView({ state, onBack, compId, onViewHeat }) {
                 <Pill tone={ROUND_TONES[round.toneIndex]}>{round.name}</Pill>
               </div>
               <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 6 }}>
-                {heats.map((h) => (
-                  <BracketHeatTable key={h.id} state={state} heat={h} compId={compId} onViewHeat={onViewHeat} />
-                ))}
+                {heats.map((h) =>
+                  h.hiddenFromPublic ? (
+                    <div
+                      key={h.id}
+                      style={{
+                        minWidth: 220,
+                        border: "0.5px dashed var(--border-strong, #C7C5BC)",
+                        borderRadius: 10,
+                        flexShrink: 0,
+                        padding: "1.2rem 12px",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        textAlign: "center",
+                        gap: 4,
+                      }}
+                    >
+                      <span style={{ fontWeight: 600, fontSize: 13 }}>Heat {heatNumber(state, h.id)}</span>
+                      <span style={{ fontSize: 12, color: "var(--text-muted, #888780)" }}>Results held back</span>
+                    </div>
+                  ) : (
+                    <BracketHeatTable key={h.id} state={state} heat={h} compId={compId} onViewHeat={onViewHeat} />
+                  )
+                )}
                 {heats.length === 0 && <p style={{ fontSize: 13, color: "var(--text-muted, #888780)" }}>No heats in this round.</p>}
               </div>
             </div>
