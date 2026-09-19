@@ -1720,7 +1720,7 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
 
       {tab === "live" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {state.heats.map((h) => {
+          {orderedHeats(state).map((h) => {
             const round = state.rounds.find((r) => r.id === h.roundId);
             const rids = heatRiderIds(state, h);
             const ready = rids.length === h.slots.length && h.slots.length > 0;
@@ -2052,7 +2052,7 @@ const SpeechRecognitionCtor =
   typeof window !== "undefined" ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
 
 function SpotterConsole({ state, onBack, compId, onSwitchSpotter }) {
-  const liveHeats = state.heats.filter((h) => h.status === "active");
+  const liveHeats = orderedHeats(state).filter((h) => h.status === "active");
   const [heatId, setHeatId] = useState(liveHeats[0]?.id || "");
   const [selectedRider, setSelectedRider] = useState(null);
   const [selectedSide, setSelectedSide] = useState(null);
@@ -2571,7 +2571,7 @@ function JudgeView({ state, update, onBack, compId }) {
 }
 
 function JudgeScoring({ state, judge, onBack, compId, onSwitchJudge }) {
-  const relevantHeats = state.heats.filter((h) => h.status === "active" || h.status === "awaiting-variety");
+  const relevantHeats = orderedHeats(state).filter((h) => h.status === "active" || h.status === "awaiting-variety");
   const [heatId, setHeatId] = useState(relevantHeats[0]?.id || "");
   useEffect(() => {
     if (!relevantHeats.find((h) => h.id === heatId) && relevantHeats[0]) setHeatId(relevantHeats[0].id);
@@ -2797,7 +2797,7 @@ function JudgeScoring({ state, judge, onBack, compId, onSwitchJudge }) {
 }
 
 function LeaderboardView({ state, onBack, compId, focusHeatId }) {
-  const heatsWithActivity = state.heats.filter((h) => h.status !== "pending" && !h.hiddenFromPublic);
+  const heatsWithActivity = orderedHeats(state).filter((h) => h.status !== "pending" && !h.hiddenFromPublic);
   const [heatId, setHeatId] = useState(focusHeatId || heatsWithActivity[0]?.id || "");
   const [expanded, setExpanded] = useState(null);
 
