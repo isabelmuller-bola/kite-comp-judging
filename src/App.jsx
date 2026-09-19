@@ -1329,6 +1329,7 @@ function ShareLinkCard({ compId }) {
 
 function AdminView({ state, update, onBack, compId, onForgetDevice }) {
   const [tab, setTab] = useState(state.planningDone ? "riders" : "plan");
+  const [adminFocusHeatId, setAdminFocusHeatId] = useState(null);
   const [newRider, setNewRider] = useState("");
   const [newRank, setNewRank] = useState("");
   const [newTrick, setNewTrick] = useState({});
@@ -1566,6 +1567,8 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
     { id: "riders", label: "Riders" },
     { id: "trikots", label: "Trikots" },
     { id: "live", label: "Live control" },
+    { id: "bracket", label: "Bracket" },
+    { id: "leaderboard", label: "Leaderboard" },
     { id: "tricks", label: "Tricks" },
     { id: "judges", label: "Judges" },
     { id: "spotters", label: "Spotters" },
@@ -1809,6 +1812,21 @@ function AdminView({ state, update, onBack, compId, onForgetDevice }) {
           {state.heats.length === 0 && <p style={{ color: "var(--text-muted, #888780)" }}>Plan the competition first.</p>}
         </div>
       )}
+
+      {tab === "bracket" && (
+        <BracketView
+          state={state}
+          onBack={null}
+          compId={compId}
+          showHidden
+          onViewHeat={(heatId) => {
+            setAdminFocusHeatId(heatId);
+            setTab("leaderboard");
+          }}
+        />
+      )}
+
+      {tab === "leaderboard" && <LeaderboardView state={state} onBack={null} compId={compId} focusHeatId={adminFocusHeatId} showHidden />}
 
       {tab === "tricks" && (
         <div>
@@ -2796,8 +2814,8 @@ function JudgeScoring({ state, judge, onBack, compId, onSwitchJudge }) {
   );
 }
 
-function LeaderboardView({ state, onBack, compId, focusHeatId }) {
-  const heatsWithActivity = orderedHeats(state).filter((h) => h.status !== "pending" && !h.hiddenFromPublic);
+function LeaderboardView({ state, onBack, compId, focusHeatId, showHidden = false }) {
+  const heatsWithActivity = orderedHeats(state).filter((h) => h.status !== "pending" && (showHidden || !h.hiddenFromPublic));
   const [heatId, setHeatId] = useState(focusHeatId || heatsWithActivity[0]?.id || "");
   const [expanded, setExpanded] = useState(null);
 
@@ -2841,6 +2859,7 @@ function LeaderboardView({ state, onBack, compId, focusHeatId }) {
         {heatsWithActivity.map((h) => (
           <button key={h.id} onClick={() => { setHeatId(h.id); setExpanded(null); }} style={btn(heatId === h.id)}>
             Heat {heatNumber(state, h.id)} {h.status === "active" && <span style={{ fontSize: 11 }}> · live</span>}
+            {h.hiddenFromPublic && <span style={{ fontSize: 11 }}> · hidden from public</span>}
           </button>
         ))}
       </div>
@@ -3017,7 +3036,7 @@ function BracketHeatTable({ state, heat, compId, onViewHeat }) {
   );
 }
 
-function BracketView({ state, onBack, compId, onViewHeat }) {
+function BracketView({ state, onBack, compId, onViewHeat, showHidden = false }) {
   return (
     <div>
       <Header title="Bracket" onBack={onBack} />
@@ -3031,7 +3050,7 @@ function BracketView({ state, onBack, compId, onViewHeat }) {
               </div>
               <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 6 }}>
                 {heats.map((h) =>
-                  h.hiddenFromPublic ? (
+                  h.hiddenFromPublic && !showHidden ? (
                     <div
                       key={h.id}
                       style={{
@@ -3052,7 +3071,10 @@ function BracketView({ state, onBack, compId, onViewHeat }) {
                       <span style={{ fontSize: 12, color: "var(--text-muted, #888780)" }}>Results held back</span>
                     </div>
                   ) : (
-                    <BracketHeatTable key={h.id} state={state} heat={h} compId={compId} onViewHeat={onViewHeat} />
+                    <div key={h.id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {h.hiddenFromPublic && <Pill tone="danger">Hidden from public</Pill>}
+                      <BracketHeatTable state={state} heat={h} compId={compId} onViewHeat={onViewHeat} />
+                    </div>
                   )
                 )}
                 {heats.length === 0 && <p style={{ fontSize: 13, color: "var(--text-muted, #888780)" }}>No heats in this round.</p>}
